@@ -1,0 +1,4 @@
+# Railway public URL, no trailing slash
+bridge-url: "https://YOUR-RAILWAY-DOMAIN.up.railway.app"
+# Put the SAME BRIDGE_SECRET used in Railway here. Never commit the real secret to GitHub.
+bridge-secret: "CHANGE_ME"

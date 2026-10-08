@@ -1,3 +1,15 @@
+## v1.22.0 - Rank-based promotion boards
+
+- Restored the Crafted SMP welcome before the first category, with target-rank evaluation points.
+- Added distinct questions for all six ranks in all eight core categories, based on the supplied SMP rules.pdf.
+- Added a ninth, unscored Bonus / Troll Check with the eight requested creative prompts and rank-specific follow-ups.
+- Added matching category briefs and applicant study topics; select three questions in each category.
+- Preserved the 24-point core score, alternating interviewers, personal notes and Owner final approval.
+- Saved question snapshots for new interviews and preserved original question indices for interviews already started.
+- Split final details into readable messages within Discord size limits.
+
+See INTERVIEW-UPDATE.md for deployment and compatibility notes, and INTERVIEW-QUESTION-CATALOG.md for all questions.
+
 ## v1.21.1 duplicate Flash reminder fix
 
 - Scheduled announcements now create **one** pre-announcement Flash Updates message instead of posting once at scheduling time and again at the reminder time.

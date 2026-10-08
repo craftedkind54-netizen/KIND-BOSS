@@ -1,11 +1,12 @@
 {
   "name": "kind-boss",
-  "version": "1.21.0",
+  "version": "1.22.0",
   "private": true,
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check src/tickets.js && node --check src/announcements.js && node --check src/strikes.js && node --check src/venting.js && node --check src/staffApplications.js && node --check src/intros.js"
+    "check": "node --check index.js && node --check src/tickets.js && node --check src/announcements.js && node --check src/strikes.js && node --check src/venting.js && node --check src/staffApplications.js && node --check src/intros.js && node --check src/interviewQuestions.js",
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=20"

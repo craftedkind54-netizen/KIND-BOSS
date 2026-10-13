@@ -441,6 +441,22 @@ async function showSpecificStaffMenu(
 // CREATE TICKET
 // =====================================================
 
+function ticketCreationErrorMessage(error) {
+  if ([50001, 50013].includes(Number(error.code))) {
+    return '❌ KIND BOSS cannot create a private ticket with its current permissions. Ask an owner to check Manage Channels and access to the ticket category.';
+  }
+  if (Number(error.code) === 10003) {
+    return '❌ The support ticket category no longer exists. Ask an owner to update the ticket category setting.';
+  }
+  if ([30013, 30061].includes(Number(error.code))) {
+    return '❌ The ticket category or server has reached its channel limit. Please ask staff to close resolved tickets.';
+  }
+  if (Number(error.code) === 50035) {
+    return '❌ Discord rejected the ticket settings. Ask an owner to check the ticket category and staff roles; the bot log contains the details.';
+  }
+  return '❌ The ticket could not be created. Please contact staff and ask them to check the KIND BOSS ticket creation log.';
+}
+
 async function createTicket({
   guild,
   member,
@@ -495,96 +511,41 @@ async function createTicket({
       };
     }
 
-    // =================================================
-    // PERMISSIONS
-    // =================================================
-
-    const overwrites = [
-      {
-        id:
-          guild.roles.everyone.id,
-
-        deny: [
-          PermissionsBitField.Flags
-            .ViewChannel,
-        ],
-      },
-
-      {
-        id:
-          member.id,
-
-        allow:
-          ticketPermissions(),
-      },
-
-      {
-        id:
-          client.user.id,
-
-        allow: [
-          ...ticketPermissions(),
-
-          PermissionsBitField.Flags
-            .ManageChannels,
-
-          PermissionsBitField.Flags
-            .ManageMessages,
-        ],
-      },
-    ];
-
-    // =================================================
-    // STAFF ROLE PERMISSIONS
-    // =================================================
-
-    for (
-      const roleId
-      of STAFF_ROLE_IDS
-    ) {
-      if (
-        allowedRoles.includes(
-          roleId
-        )
-      ) {
-        overwrites.push({
-          id:
-            roleId,
-
-          allow:
-            ticketPermissions(),
-        });
-
-      } else {
-
-        overwrites.push({
-          id:
-            roleId,
-
-          deny: [
-            PermissionsBitField.Flags
-              .ViewChannel,
-          ],
-        });
+    // Resolve configuration before creating a private channel. Explicit types
+    // avoid discord.js guessing roles/users from an incomplete member cache.
+    const category = await guild.channels.fetch(TICKET_CATEGORY_ID);
+    if (!category || category.type !== ChannelType.GuildCategory) {
+      return { success: false, message: '❌ Support tickets are not configured correctly. Ask an owner to check the ticket category.' };
+    }
+    const roles = await guild.roles.fetch();
+    const staffRoles = [...new Set(STAFF_ROLE_IDS.map(id => id.trim()))]
+      .filter(id => id !== guild.id && roles.has(id));
+    const permittedRoles = new Set(allowedRoles.map(id => id.trim()));
+    if (type === 'all_staff' && !staffRoles.some(id => permittedRoles.has(id))) {
+      return { success: false, message: '❌ No valid support staff roles are configured. Please contact an owner.' };
+    }
+    const overwritesById = new Map();
+    const addOverwrite = overwrite => overwritesById.set(overwrite.id, overwrite);
+    addOverwrite({ id: guild.roles.everyone.id, type: 0, deny: [PermissionsBitField.Flags.ViewChannel] });
+    for (const roleId of staffRoles) {
+      addOverwrite({ id: roleId, type: 0,
+        ...(permittedRoles.has(roleId)
+          ? { allow: ticketPermissions() }
+          : { deny: [PermissionsBitField.Flags.ViewChannel] }) });
+    }
+    for (const selectedUserId of new Set(allowedUsers)) {
+      const selected = await guild.members.fetch(selectedUserId);
+      if (!selected || selected.user.bot || !isStaff(selected)) {
+        return { success: false, message: '❌ A selected staff member is no longer available. Please choose staff again.' };
       }
+      addOverwrite({ id: selected.id, type: 1, allow: ticketPermissions() });
     }
-
-    // =================================================
-    // SELECTED STAFF
-    // =================================================
-
-    for (
-      const selectedUserId
-      of allowedUsers
-    ) {
-      overwrites.push({
-        id:
-          selectedUserId,
-
-        allow:
-          ticketPermissions(),
-      });
-    }
+    addOverwrite({ id: member.id, type: 1, allow: ticketPermissions() });
+    addOverwrite({ id: client.user.id, type: 1, allow: [
+      ...ticketPermissions(), PermissionsBitField.Flags.ManageChannels,
+      PermissionsBitField.Flags.ManageMessages,
+    ] });
+    const overwrites = [...overwritesById.values()];
 
     // =================================================
     // CREATE CHANNEL
@@ -631,10 +592,10 @@ async function createTicket({
         allowedUsers.length === 1
       ) {
         privacyText =
-          'Only you and the staff member you selected can access this ticket.';
+          'You and the selected staff member can access this ticket. Server administrators can also access it.';
       } else {
         privacyText =
-          'Only you and the staff members you selected can access this ticket.';
+          'You and the selected staff members can access this ticket. Server administrators can also access it.';
       }
     }
 
@@ -691,6 +652,7 @@ async function createTicket({
             )
         );
 
+    try {
     await ticketChannel.send({
       content:
         `${member}`,
@@ -709,6 +671,14 @@ async function createTicket({
         ],
       },
     });
+
+    } catch (error) {
+      // The private channel already exists: do not report creation failure or
+      // create another channel on a retry just because the welcome post failed.
+      console.error('Ticket welcome message error:', error);
+      return { success: true, channel: ticketChannel,
+        message: 'Your private ticket was created, but its welcome message could not be sent. Please contact staff in the ticket.' };
+    }
 
     return {
       success:
@@ -730,7 +700,7 @@ async function createTicket({
         false,
 
       message:
-        '❌ The ticket could not be created. Please try again.',
+        ticketCreationErrorMessage(error),
     };
 
   } finally {
@@ -1296,7 +1266,7 @@ client.on(
           return interaction.editReply({
             content:
               result.success
-                ? `✅ Ticket created: ${result.channel}`
+                ? `✅ Ticket created: ${result.channel}${result.message ? `\n${result.message}` : ''}`
                 : result.message,
           });
         }
@@ -1380,7 +1350,7 @@ client.on(
         return interaction.editReply({
           content:
             result.success
-              ? `✅ Private ticket created with ${validStaffIds.length} selected staff member(s): ${result.channel}`
+              ? `✅ Private ticket created with ${validStaffIds.length} selected staff member(s): ${result.channel}${result.message ? `\n${result.message}` : ''}`
               : result.message,
 
           components:
@@ -1570,4 +1540,3 @@ if (!DISCORD_TOKEN) {
 
   process.exit(1);
 }
-

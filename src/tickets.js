@@ -263,8 +263,7 @@ async function createSupportPanel(
       (message) =>
         message.author.id ===
           client.user.id &&
-        message.embeds[0]?.title ===
-          '🎫 Crafted SMP Support'
+        ['🎫 Crafted SMP Support', '🎫 Kind SMP Support'].includes(message.embeds[0]?.title)
     );
 
   for (
@@ -284,7 +283,7 @@ async function createSupportPanel(
   const embed =
     new EmbedBuilder()
       .setTitle(
-        '🎫 Crafted SMP Support'
+        '🎫 Kind SMP Support'
       )
       .setDescription(
         [
@@ -306,7 +305,7 @@ async function createSupportPanel(
       )
       .setFooter({
         text:
-          'Crafted SMP Support System',
+          'Kind SMP Support System',
       });
 
   const buttons =
@@ -604,7 +603,7 @@ async function createTicket({
       'all_staff'
     ) {
       privacyText =
-        'You and all Crafted SMP staff can access this ticket.';
+        'You and all Kind SMP staff can access this ticket.';
     }
 
     // =================================================
@@ -1489,7 +1488,7 @@ client.once(
       );
 
       console.log(
-        '✅ Crafted SMP Support system ready.'
+        '✅ Kind SMP Support system ready.'
       );
 
     } catch (error) {

@@ -608,6 +608,21 @@ function pollAnswersModal(draft, page) {
   return modal;
 }
 
+function announcementApprovalReasonModal() {
+  const modal = new ModalBuilder()
+    .setCustomId('announcement_approval_reason')
+    .setTitle('Reason for Approval');
+  const reason = new TextInputBuilder()
+    .setCustomId('approval_reason')
+    .setLabel('Why should this be posted?')
+    .setPlaceholder('Explain the purpose of this poll or announcement...')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(1000);
+  modal.addComponents(new ActionRowBuilder().addComponents(reason));
+  return modal;
+}
+
 // =====================================================
 // NEW SCROLLING SCHEDULE PICKER
 // =====================================================
@@ -1095,6 +1110,7 @@ function announcementApprovalPayload(item) {
   const description = [
     `**Submitted by:** <@${item.userId}>`,
     `**Content:** ${kind}`,
+    `**Reason for approval:** ${draft.approvalReason || 'No reason provided'}`,
     draft.schedule?.enabled ? `**Scheduled for:** <t:${draft.schedule.timestamp}:F>` : '**Action:** Post when approved',
     draft.announcement?.title ? `**Title:** ${draft.announcement.title}` : '',
     draft.announcement?.pingEveryone ? '**Ping:** @everyone (only sent if approved)' : '',
@@ -1517,16 +1533,11 @@ client.on(Events.InteractionCreate, async interaction => {
         return interaction.reply({ content: '❌ Finish the required sections first.', ephemeral: true });
       }
 
-      await interaction.deferUpdate();
       if (needsAnnouncementApproval(interaction, draft)) {
-        try {
-          await queueAnnouncementApproval(draft, interaction.user.id);
-          drafts.delete(interaction.user.id);
-          return interaction.editReply({ content: `⏳ Sent to <#${ANNOUNCEMENT_APPROVAL_CHANNEL_ID}> for Owner/Co-Owner approval. It will post after approval.`, embeds: [], components: [] });
-        } catch (error) {
-          return interaction.editReply({ content: `❌ Could not submit for approval: ${error.message}`, embeds: [], components: [] });
-        }
+        return interaction.showModal(announcementApprovalReasonModal());
       }
+
+      await interaction.deferUpdate();
       const result = await postDraft(draft);
       await sendReleasedFlashNotice(draft, result);
 
@@ -1686,17 +1697,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       const wasEditing = Boolean(draft.editingScheduledId);
       if (needsAnnouncementApproval(interaction, draft)) {
-        await interaction.deferUpdate();
-        try {
-          await queueAnnouncementApproval(draft, interaction.user.id);
-          drafts.delete(interaction.user.id);
-          return interaction.editReply({
-            content: `⏳ Sent to <#${ANNOUNCEMENT_APPROVAL_CHANNEL_ID}> for Owner/Co-Owner approval. The schedule will be saved after approval.`,
-            embeds: [], components: [],
-          });
-        } catch (error) {
-          return interaction.editReply({ content: `❌ Could not submit for approval: ${error.message}`, embeds: [], components: [] });
-        }
+        return interaction.showModal(announcementApprovalReasonModal());
       }
       if (wasEditing) replaceSchedule(draft.editingScheduledId, draft);
       else addSchedule(draft);
@@ -1748,6 +1749,20 @@ client.on(Events.InteractionCreate, async interaction => {
   try {
     const draft = drafts.get(interaction.user.id);
     if (!draft) return interaction.reply({ content: '❌ Draft expired.', ephemeral: true });
+
+    if (interaction.customId === 'announcement_approval_reason') {
+      const reason = interaction.fields.getTextInputValue('approval_reason').trim();
+      if (!reason) return interaction.reply({ content: '❌ Please enter a reason so the Owner can review your request.', ephemeral: true });
+      draft.approvalReason = reason;
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        await queueAnnouncementApproval(draft, interaction.user.id);
+        drafts.delete(interaction.user.id);
+        return interaction.editReply(`⏳ Sent to <#${ANNOUNCEMENT_APPROVAL_CHANNEL_ID}> for Owner/Co-Owner approval. It will post or schedule after approval.`);
+      } catch (error) {
+        return interaction.editReply(`❌ Could not submit for approval: ${error.message}`);
+      }
+    }
 
     if (interaction.customId === 'announcement_modal') {
       if (draft.type === 'flash') {

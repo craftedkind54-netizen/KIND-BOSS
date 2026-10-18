@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
 
-const REFERENCE_CARD = fs.readFileSync(path.join(__dirname, 'assets', 'active-goal-reference.png'));
+const CARD_VERSION = 2;
+const REFERENCE_CARD = fs.readFileSync(path.join(__dirname, 'assets', 'active-goal-reference-v2.png'));
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const FONT = {
   '0': ['01110','10001','10011','10101','11001','10001','01110'], '1': ['00100','01100','00100','00100','00100','00100','01110'],
@@ -114,21 +115,21 @@ function createActiveGoalCard(goal) {
   const count = goal.sampleFresh ? Math.max(0, Number(goal.onlinePlayers) || 0) : null;
   const label = count === null ? 'WAITING' : `${count} / ${target}`;
 
-  // Replace the placeholder in the Players Online tile with the live tab-list count.
-  paintRect(image, 235, 482, 365, 62, [9, 27, 40]);
-  drawText(image, label, 250, 486, 4, [56, 224, 242]);
-  const average = goal.averageOnlinePlayers == null ? 'COLLECTING' : `7D AVG ${Math.round(goal.averageOnlinePlayers)}`;
-  drawText(image, average, 250, 518, 3, [139, 209, 222]);
+  // Keep all artwork fixed; only replace the player-count readout and meter.
+  // The larger purple bitmap text stays legible when Discord scales the image down.
+  paintRect(image, 235, 482, 365, 62, [23, 14, 33]);
+  const scale = Math.min(8, Math.max(4, Math.floor(350 / (label.length * 6))));
+  drawText(image, label, 250, 486, scale, [216, 166, 255]);
 
-  // Fill the tile's 15-cell meter to show how close the server is to its target.
+  // Fill the tile's 15-cell meter only as the tab-list count changes.
   if (count !== null) {
     const filled = Math.min(15, Math.floor((count / target) * 15));
     for (let index = 0; index < filled; index++) {
-      const shade = index === 14 ? [95, 240, 213] : [25, 174, 211];
+      const shade = index === 14 ? [218, 166, 255] : [164, 74, 222];
       paintRect(image, 131 + index * 31.9, 554, 25, 33, shade, 0.9);
     }
   }
   return encodeRgbPng(image);
 }
 
-module.exports = { createActiveGoalCard };
+module.exports = { createActiveGoalCard, decodeRgbPng, CARD_VERSION };

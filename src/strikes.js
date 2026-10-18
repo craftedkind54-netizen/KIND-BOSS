@@ -7,6 +7,7 @@ const { createApplicationDiscordLookup } = require('./playerDiscordLinks');
 const { punishmentFor, projectedTotal } = require('./strikePolicy');
 const { reversibleStrikeAmount } = require('./strikeAppealPolicy');
 const { createStaffCommandEmbed } = require('./staffAudit');
+const { createActivePlayerGoal } = require('./activePlayerGoal');
 const {
   Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
@@ -39,6 +40,8 @@ let strikeApprovalChannelId = process.env.STRIKE_APPROVAL_CHANNEL_ID || '';
 const OWNER_ROLE_ID = process.env.OWNER_ROLE_ID || '1555827222688829441';
 const MINECRAFT_FEED_CHANNEL_ID = process.env.MINECRAFT_FEED_CHANNEL_ID || '1555986926052315208';
 const STAFF_AUDIT_CHANNEL_ID = process.env.STAFF_AUDIT_CHANNEL_ID || '1561291135819714630';
+const ACTIVE_GOAL_PROGRESS_CHANNEL_ID = process.env.ACTIVE_GOAL_PROGRESS_CHANNEL_ID || '1561320960135659520';
+const ACTIVE_GOAL_MANAGEMENT_CHANNEL_ID = process.env.ACTIVE_GOAL_MANAGEMENT_CHANNEL_ID || '1561323169862783086';
 const STAFF_ROLE_IDS = [process.env.OWNER_ROLE_ID || '1555827222688829441', process.env.SENIOR_STAFF_ROLE_ID || '1555839917815238736', process.env.GENERAL_STAFF_ROLE_ID || '1555840026607362099'];
 const BEDROCK_PREFIX = '.';
 
@@ -88,6 +91,7 @@ CREATE TABLE IF NOT EXISTS minecraft_staff_rank_actions (
 );
 `);
 if (!strikeApprovalChannelId) strikeApprovalChannelId = db.prepare(`SELECT value FROM app_state WHERE key='strike_approval_channel_id'`).get()?.value || '';
+const activePlayerGoal = createActivePlayerGoal(db, { timezone: process.env.ACTIVE_GOAL_TIMEZONE || 'Pacific/Honolulu' });
 
 const normalizeName = n => n.trim().toLowerCase();
 const validAmount = n => Number.isSafeInteger(n) && n > 0 && n <= 1000000;
@@ -259,9 +263,77 @@ const app=express(); app.use(express.json({limit:'32kb'}));
 function auth(req,res,next){const h=req.get('authorization')||'';const expected=`Bearer ${API_SECRET}`;const a=Buffer.from(h),b=Buffer.from(expected);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return res.status(401).json({error:'Unauthorized'});next();}
 app.get('/health',(req,res)=>res.json({ok:true}));
 app.use('/api/v1',auth);
+function activeGoalSettingsEmbed(){
+  const g=activePlayerGoal.snapshot();
+  return new EmbedBuilder().setColor(0x5865f2).setTitle('Active Player Goal — Owner Controls')
+    .setDescription('Set the simultaneous player target, daily time requirement, and any prize description. The prize is displayed for players; staff arrange it manually.')
+    .addFields({name:'Current goal',value:`${g.targetPlayers} players · ${Math.round(g.requiredSeconds/60)} minutes per day`,inline:true},{name:'Current prize',value:g.prize||'No prize set',inline:true},{name:'Timezone',value:g.timezone,inline:true});
+}
+function activeGoalSettingsRows(){return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('activegoal:set').setLabel('Set Active Goal').setStyle(ButtonStyle.Primary))];}
+function activeGoalProgressEmbed(){
+  const g=activePlayerGoal.snapshot();
+  const hours=Math.floor(g.secondsToday/3600), minutes=Math.floor((g.secondsToday%3600)/60);
+  const time=`${hours}h ${minutes}m / ${Math.round(g.requiredSeconds/60)}m`;
+  const streakText=g.dayQualified?`${g.streak}/7 days · today complete`:`${g.streak}/7 days · today ${time}`;
+  const prize=g.prize||'No prize has been set yet.';
+  return new EmbedBuilder().setColor(0x5865f2).setTitle('KIND SMP — Active Player Goal')
+    .setDescription(`**${g.targetPlayers} players online at once** for **${Math.round(g.requiredSeconds/60)} minutes each day**, for **7 consecutive days**.`)
+    .addFields({name:'Online now',value:g.sampleFresh?`${g.onlinePlayers} / ${g.targetPlayers}`:'Server status unavailable',inline:true},
+      {name:'Today',value:g.dayQualified?'✅ Goal reached':time,inline:true},
+      {name:'Weekly streak',value:streakText,inline:true},
+      {name:'Prize',value:prize,inline:false})
+    .setFooter({text:`Day: ${g.day} · ${g.timezone} · online counts sampled from the Minecraft server`}).setTimestamp();
+}
+async function upsertGoalMessage(channelId,key,embed,components=[]){
+  const channel=await client.channels.fetch(channelId).catch(()=>null);
+  if(!channel?.isTextBased())throw new Error(`Active goal channel ${channelId} is unavailable`);
+  const title=embed.data.title;
+  const recent=await channel.messages.fetch({limit:100}).catch(()=>null);
+  const matches=recent?[...recent.values()].filter(m=>m.author?.id===client.user.id&&m.embeds?.some(e=>e.title===title)):[];
+  matches.sort((a,b)=>b.createdTimestamp-a.createdTimestamp);
+  let message=matches[0]||null;
+  for(const duplicate of matches.slice(1))await duplicate.delete().catch(()=>{});
+  if(message)await message.edit({embeds:[embed],components});
+  else message=await channel.send({embeds:[embed],components});
+  db.prepare('INSERT INTO app_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,message.id);
+  return message;
+}
+async function ensureActiveGoalPanels(){
+  await upsertGoalMessage(ACTIVE_GOAL_MANAGEMENT_CHANNEL_ID,'active_goal_management_message_id',activeGoalSettingsEmbed(),activeGoalSettingsRows());
+  await refreshActiveGoalProgress(true);
+}
+let lastGoalPanelEdit=0;
+async function refreshActiveGoalProgress(force=false){
+  if(!client?.isReady())return;
+  const now=Date.now(); if(!force&&now-lastGoalPanelEdit<60000)return;
+  lastGoalPanelEdit=now;
+  try{await upsertGoalMessage(ACTIVE_GOAL_PROGRESS_CHANNEL_ID,'active_goal_progress_message_id',activeGoalProgressEmbed());}
+  catch(error){console.error('Active player goal progress update failed:',error.message);}
+}
+function activeGoalModal(){
+  const g=activePlayerGoal.snapshot();
+  const modal=new ModalBuilder().setCustomId('activegoal:configure').setTitle('Configure Active Goal');
+  modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('players').setLabel('Players online at the same time').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(3).setValue(String(g.targetPlayers))),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('minutes').setLabel('Required minutes per day').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(4).setValue(String(Math.round(g.requiredSeconds/60)))),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('prize').setLabel('Prize (optional)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(200).setValue(g.prize||'')));
+  return modal;
+}
 app.post('/api/v1/players/upsert',(req,res)=>{try{const {uuid,username}=req.body;if(!uuid||!username)return res.status(400).json({error:'uuid and username required'});upsertPlayer.run(uuid,username.trim(),normalizeName(username),new Date().toISOString());ensureTotal.run(uuid);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}});
 app.get('/api/v1/players/resolve',(req,res)=>{const p=getPlayerByName.get(normalizeName(String(req.query.username||'')));if(!p)return res.status(404).json({error:'Unknown player'});res.json(p);});
 app.get('/api/v1/strikes/active',(req,res)=>res.json({players:activePlayers()}));
+app.post('/api/v1/active-goal/sample',async(req,res)=>{
+  try{
+    const online=Number(req.body?.onlinePlayers);
+    const progress=activePlayerGoal.recordSample(online);
+    await refreshActiveGoalProgress();
+    res.json({ok:true,progress:{day:progress.day,secondsToday:progress.secondsToday,streak:progress.streak,dayQualified:progress.dayQualified}});
+  }catch(error){res.status(400).json({error:error.message});}
+});
+app.post('/api/v1/minecraft/status',(req,res)=>{
+  if(req.body?.status==='offline')activePlayerGoal.markOffline();
+  refreshActiveGoalProgress(true).catch(()=>{});
+  res.json({ok:true});
+});
 // KindCore consumes the durable action log so strike changes made from Discord
 // and Minecraft use the same punishment path without polling totals ambiguously.
 app.get('/api/v1/strikes/actions',(req,res)=>{
@@ -325,8 +397,22 @@ app.post('/api/v1/staff/ranks/actions/ack',(req,res)=>{
 app.post('/api/v1/minecraft/event', async (req,res) => {
   try {
     const { type, username, uuid, message, staffReason } = req.body || {};
-    const allowedTypes = new Set(['server_online','server_offline','join','leave','advancement','death','staff_command']);
+    const allowedTypes = new Set(['server_online','server_offline','join','leave','advancement','death','staff_command','active_sample']);
     if (!allowedTypes.has(type)) return res.status(400).json({error:'Unsupported event type'});
+
+    if(type==='active_sample'){
+      const online=Number(req.body?.onlinePlayers);
+      const progress=activePlayerGoal.recordSample(online);
+      await refreshActiveGoalProgress();
+      return res.json({ok:true,day:progress.day,secondsToday:progress.secondsToday,streak:progress.streak});
+    }
+    if(type==='server_offline'){
+      activePlayerGoal.markOffline();
+      await refreshActiveGoalProgress(true);
+    }
+    if(type==='server_online'){
+      await refreshActiveGoalProgress(true);
+    }
 
     if (type === 'staff_command') {
       if (!username || !uuid || !message) return res.status(400).json({error:'username, uuid, and command required'});
@@ -496,6 +582,10 @@ function appealModal(uuid, username){
 
 client.once(Events.ClientReady, async () => {
   console.log(`Strike system logged in as ${client.user.tag}`);
+  try { await ensureActiveGoalPanels(); }
+  catch (error) { console.error('Active player goal panels could not be initialized:', error.message); }
+  const activeGoalRefreshTimer=setInterval(()=>refreshActiveGoalProgress(true).catch(()=>{}),60000);
+  activeGoalRefreshTimer.unref?.();
   try { await ensureApprovalChannel(); }
   catch (error) { console.error('Owner-only strike approval channel setup failed:', error.message); }
   await ensurePanel();
@@ -504,6 +594,28 @@ client.once(Events.ClientReady, async () => {
   await refreshPendingAppealPosts();
   retryProposalPosts();
   retryAppealPosts();
+});
+
+client.on(Events.InteractionCreate, async i=>{
+  try{
+    if((!i.isButton()&&!i.isModalSubmit())||typeof i.customId!=='string'||!i.customId.startsWith('activegoal:'))return;
+    const isOwner=i.guildId===GUILD_ID&&(i.user.id===i.guild?.ownerId||i.member?.roles?.cache?.has(OWNER_ROLE_ID));
+    if(!isOwner)return i.reply({content:'Only the server owner can set the active player goal.',flags:MessageFlags.Ephemeral});
+    if(i.channelId!==ACTIVE_GOAL_MANAGEMENT_CHANNEL_ID)return i.reply({content:'Use the Active Goal controls in the configured goal management channel.',flags:MessageFlags.Ephemeral});
+    if(i.isButton()&&i.customId==='activegoal:set')return i.showModal(activeGoalModal());
+    if(i.isModalSubmit()&&i.customId==='activegoal:configure'){
+      const playersText=i.fields.getTextInputValue('players').trim();
+      const minutesText=i.fields.getTextInputValue('minutes').trim();
+      const prize=i.fields.getTextInputValue('prize').trim();
+      if(!/^\d+$/.test(playersText)||!/^\d+$/.test(minutesText))return i.reply({content:'Enter whole numbers for both fields.',flags:MessageFlags.Ephemeral});
+      const settings=activePlayerGoal.setGoal(Number(playersText),Number(minutesText),prize);
+      await ensureActiveGoalPanels();
+      return i.reply({content:`Goal updated: ${settings.targetPlayers} players online for ${Math.round(settings.requiredSeconds/60)} minutes per day, seven consecutive days. Prize: ${settings.prize||'none set'}. Setting a new goal resets its current streak.`,flags:MessageFlags.Ephemeral});
+    }
+  }catch(error){
+    console.error('Active player goal interaction failed:',error);
+    if(!i.replied&&!i.deferred)await i.reply({content:'Could not update the active player goal. Please check the bot logs.',flags:MessageFlags.Ephemeral}).catch(()=>{});
+  }
 });
 
 async function refreshPendingProposalPosts() {

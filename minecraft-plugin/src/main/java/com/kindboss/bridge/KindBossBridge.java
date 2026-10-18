@@ -42,6 +42,10 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::pollApprovedStrikeActions, 60L, 100L);
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::pollApprovedStaffRankActions, 80L, 100L);
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::pollApprovedAppealReversals, 100L, 100L);
+        // Sample from the main thread so Bukkit's online-player collection is never read asynchronously.
+        Bukkit.getScheduler().runTaskTimer(this, () -> {
+            postActivePlayerSample();
+        }, 40L, 400L);
         postEvent("server_online", null, null);
         getLogger().info("KIND BOSS bridge + activity feed enabled for Paper 1.21.11.");
     }
@@ -78,6 +82,10 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         if (message != null) body.append(",\"message\":\"").append(esc(message)).append("\"");
         body.append("}");
         post("/api/v1/minecraft/event", body.toString());
+    }
+
+    private void postActivePlayerSample() {
+        post("/api/v1/minecraft/event", "{\"type\":\"active_sample\",\"onlinePlayers\":" + Bukkit.getOnlinePlayers().size() + "}");
     }
 
     /** Sends a staff-mode command audit entry through the authenticated shared API. */

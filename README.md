@@ -1,3 +1,13 @@
+# KIND Core unified service · v2.0
+
+KIND BOSS and Kind Bridge now run in one Railway process, one Discord bot client and this one GitHub repository. The bridge keeps the Kind SMP application, YouTube, Minecraft event and job-queue features. KIND BOSS keeps tickets, announcements, interviews, staff applications and strikes. The public Railway listener serves the bridge API and securely forwards `/api/v1/*` to the private strike API.
+
+Use one `DISCORD_TOKEN` for the combined bot. Keep the existing Railway `BRIDGE_SECRET` for the Minecraft plugin. The service requires Node 24. It keeps the two SQLite databases as separate files under the service data directory so their schemas and records remain isolated. Mount the existing KIND BOSS persistent volume at `/app/data`; migrate the Kind Bridge `kind-smp.db` into that same mounted directory before switching traffic. Railway allows one volume per service, so the two old databases must be copied into the chosen volume before stopping the old services.
+
+On first startup, the bot creates a private `#strike-approvals` channel with access for the owner role and the bot only. The bot needs Manage Channels for this one-time setup. General Staff can submit strike proposals in game or through the strike panel; totals and punishments change only after the owner approves the proposal. Keep the Minecraft bridge URL pointed at the combined Railway domain.
+
+Do not remove either old Railway service or volume until the merged deployment is healthy and both databases have been copied. Back up both volumes first. Once the combined service is running, stop the old Kind Bridge service so the shared Discord bot token is not connected twice.
+
 ## v1.22.0 - Rank-based promotion boards
 
 - Restored the Crafted SMP welcome before the first category, with target-rank evaluation points.

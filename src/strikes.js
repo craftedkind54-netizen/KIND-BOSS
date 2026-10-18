@@ -2,10 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
+const { punishmentFor, projectedTotal } = require('./strikePolicy');
 const {
   Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
-  StringSelectMenuBuilder
+  StringSelectMenuBuilder, ChannelType, PermissionFlagsBits
 } = require('discord.js');
 
 // This is a standalone strike module/bot entry point. If your existing index.js already
@@ -14,11 +15,15 @@ const {
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const API_SECRET = process.env.BRIDGE_SECRET || process.env.STRIKES_API_SECRET;
-const PORT = Number(process.env.PORT || 3000);
+// Kind Bridge owns the public Railway port in the combined service. Keep the
+// strike API on loopback and proxy /api/v1 through the shared public listener.
+const PORT = Number(process.env.STRIKES_API_PORT || 3001);
 const DB_PATH = process.env.STRIKES_DB_PATH || './data/strikes.db';
 const GUILD_ID = process.env.GUILD_ID || '1555704317552361563';
 const STRIKE_LOG_CHANNEL_ID = process.env.STRIKE_LOG_CHANNEL_ID || '1555840868693442640';
 const STRIKE_MANAGEMENT_CHANNEL_ID = process.env.STRIKE_MANAGEMENT_CHANNEL_ID || '1555840868693442640';
+let strikeApprovalChannelId = process.env.STRIKE_APPROVAL_CHANNEL_ID || '';
+const OWNER_ROLE_ID = process.env.OWNER_ROLE_ID || '1555827222688829441';
 const MINECRAFT_FEED_CHANNEL_ID = process.env.MINECRAFT_FEED_CHANNEL_ID || '1555986926052315208';
 const STAFF_ROLE_IDS = [process.env.OWNER_ROLE_ID || '1555827222688829441', process.env.SENIOR_STAFF_ROLE_ID || '1555839917815238736', process.env.GENERAL_STAFF_ROLE_ID || '1555840026607362099'];
 const BEDROCK_PREFIX = '.';
@@ -41,7 +46,15 @@ CREATE TABLE IF NOT EXISTS strike_actions (
 CREATE TABLE IF NOT EXISTS processed_requests (action_id TEXT PRIMARY KEY, response_json TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS discord_active_messages (player_uuid TEXT PRIMARY KEY, message_id TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pending_strike_proposals (
+ proposal_id TEXT PRIMARY KEY, player_uuid TEXT NOT NULL, username TEXT NOT NULL,
+ action TEXT NOT NULL CHECK(action IN ('add','remove')), amount INTEGER NOT NULL,
+ reason TEXT NOT NULL, source TEXT NOT NULL, staff_identity TEXT NOT NULL,
+ created_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', message_id TEXT,
+ decided_at TEXT, decided_by TEXT, result_json TEXT
+);
 `);
+if (!strikeApprovalChannelId) strikeApprovalChannelId = db.prepare(`SELECT value FROM app_state WHERE key='strike_approval_channel_id'`).get()?.value || '';
 
 const normalizeName = n => n.trim().toLowerCase();
 const validAmount = n => Number.isSafeInteger(n) && n > 0 && n <= 1000000;
@@ -73,6 +86,58 @@ const applyActionTx = db.transaction(input => {
   setProcessed.run(input.actionId,JSON.stringify(result),now); return result;
 });
 
+function createProposal(input) {
+ if (!['add','remove'].includes(input.action)) throw new Error('Invalid action');
+ if (!validAmount(input.amount)) throw new Error('Amount must be a whole number from 1 to 1000000');
+ if (!input.reason || !input.reason.trim()) throw new Error('Reason is required');
+ if (!input.playerUuid || !input.username) throw new Error('Player UUID and username are required');
+ if (!strikeApprovalChannelId) throw new Error('The owner-only strike approval channel has not been created yet. Check the bot permissions and Railway logs.');
+ const proposalId = crypto.randomUUID();
+ db.prepare(`INSERT INTO pending_strike_proposals(proposal_id,player_uuid,username,action,amount,reason,source,staff_identity,created_at) VALUES(?,?,?,?,?,?,?,?,?)`)
+  .run(proposalId,input.playerUuid,input.username,input.action,input.amount,input.reason.trim(),input.source,input.staffIdentity||'Unknown',new Date().toISOString());
+ return proposalId;
+}
+function proposalEmbed(p) {
+ const current = getTotal.get(p.player_uuid)?.total || 0;
+ const projected = projectedTotal(current,p.action,p.amount);
+ const punishment = p.action === 'add' ? punishmentFor(projected) : null;
+ return new EmbedBuilder().setColor(0x8b5cf6).setTitle(`Strike ${p.action} request · ${p.username}`)
+  .setDescription(`**Requested by:** ${p.staff_identity}\n**Source:** ${p.source}\n**Reason:** ${p.reason}`)
+  .addFields({name:'Current total',value:String(current),inline:true},{name:'Requested change',value:`${p.action==='add'?'+':'−'}${p.amount}`,inline:true},{name:'Projected total',value:String(projected),inline:true},
+   ...(punishment?[{name:'If approved',value:`${punishment.type==='jail'?'Jail':'Temporary ban'} · ${punishment.duration}`,inline:true}]:[]))
+  .setFooter({text:`Proposal ${p.proposal_id}`}).setTimestamp(new Date(p.created_at));
+}
+const proposalRows = id => [new ActionRowBuilder().addComponents(
+ new ButtonBuilder().setCustomId(`strike:approve-proposal:${id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+ new ButtonBuilder().setCustomId(`strike:deny-proposal:${id}`).setLabel('Deny').setStyle(ButtonStyle.Danger)
+)];
+async function publishProposal(id) {
+ const p=db.prepare(`SELECT * FROM pending_strike_proposals WHERE proposal_id=? AND status='pending'`).get(id);
+ if(!p || p.message_id || !strikeApprovalChannelId)return;
+ const channel=await client.channels.fetch(strikeApprovalChannelId);
+ if(!channel?.isTextBased())throw new Error('Strike approval channel is unavailable');
+ const message=await channel.send({embeds:[proposalEmbed(p)],components:proposalRows(id),allowedMentions:{parse:[]}});
+ db.prepare('UPDATE pending_strike_proposals SET message_id=? WHERE proposal_id=? AND status=\'pending\'').run(message.id,id);
+}
+function approveProposal(id, owner) {
+ return db.transaction(() => {
+  const p=db.prepare(`SELECT * FROM pending_strike_proposals WHERE proposal_id=?`).get(id);
+  if(!p)throw new Error('Strike proposal not found');
+  if(p.status!=='pending')throw new Error(`This proposal was already ${p.status}`);
+  const result=applyActionTx({actionId:p.proposal_id,playerUuid:p.player_uuid,username:p.username,action:p.action,amount:p.amount,reason:p.reason,source:p.source,staffIdentity:p.staff_identity});
+  const punishment=p.action==='add'?punishmentFor(result.newTotal):null;
+  const enriched={...result,punishment};
+  db.prepare(`UPDATE pending_strike_proposals SET status='approved',decided_at=?,decided_by=?,result_json=? WHERE proposal_id=? AND status='pending'`)
+   .run(new Date().toISOString(),owner,JSON.stringify(enriched),id);
+  return {proposal:p,result:enriched};
+ })();
+}
+function denyProposal(id, owner) {
+ const result=db.prepare(`UPDATE pending_strike_proposals SET status='denied',decided_at=?,decided_by=? WHERE proposal_id=? AND status='pending'`).run(new Date().toISOString(),owner,id);
+ if(!result.changes)throw new Error('Strike proposal was not found or was already decided');
+ return db.prepare(`SELECT * FROM pending_strike_proposals WHERE proposal_id=?`).get(id);
+}
+
 function latestFor(uuid){return db.prepare(`SELECT * FROM strike_actions WHERE player_uuid=? ORDER BY id DESC LIMIT 1`).get(uuid);}
 function activePlayers(){return db.prepare(`SELECT p.uuid,p.username,s.total FROM strike_totals s JOIN players p ON p.uuid=s.player_uuid WHERE s.total>0 ORDER BY s.total DESC,p.username COLLATE NOCASE`).all();}
 function activeEmbed(p){
@@ -95,6 +160,17 @@ app.use('/api/v1',auth);
 app.post('/api/v1/players/upsert',(req,res)=>{try{const {uuid,username}=req.body;if(!uuid||!username)return res.status(400).json({error:'uuid and username required'});upsertPlayer.run(uuid,username.trim(),normalizeName(username),new Date().toISOString());ensureTotal.run(uuid);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}});
 app.get('/api/v1/players/resolve',(req,res)=>{const p=getPlayerByName.get(normalizeName(String(req.query.username||'')));if(!p)return res.status(404).json({error:'Unknown player'});res.json(p);});
 app.get('/api/v1/strikes/active',(req,res)=>res.json({players:activePlayers()}));
+// KindCore consumes the durable action log so strike changes made from Discord
+// and Minecraft use the same punishment path without polling totals ambiguously.
+app.get('/api/v1/strikes/actions',(req,res)=>{
+  const after=Number(req.query.after||0), requestedLimit=Number(req.query.limit||50);
+  if(!Number.isSafeInteger(after)||after<0)return res.status(400).json({error:'after must be a non-negative action cursor'});
+  if(!Number.isSafeInteger(requestedLimit)||requestedLimit<1||requestedLimit>100)return res.status(400).json({error:'limit must be a whole number from 1 to 100'});
+  const actions=db.prepare(`SELECT id,action_id AS actionId,player_uuid AS playerUuid,username_at_time AS username,action,applied_amount AS amount,previous_total AS previousTotal,new_total AS newTotal,reason,source,staff_identity AS staffIdentity,created_at AS createdAt FROM strike_actions WHERE id>? ORDER BY id ASC LIMIT ?`).all(after,requestedLimit)
+    .map(action=>({...action,punishment:action.action==='add'?punishmentFor(action.newTotal):null}));
+  const latestActionId=db.prepare(`SELECT COALESCE(MAX(id),0) AS id FROM strike_actions`).get().id;
+  res.json({actions,nextCursor:actions.length?actions.at(-1).id:after,latestActionId,hasMore:actions.length===requestedLimit});
+});
 
 // Minecraft activity feed. Normal Minecraft chat is intentionally NOT accepted or posted.
 app.post('/api/v1/minecraft/event', async (req,res) => {
@@ -135,7 +211,14 @@ app.post('/api/v1/minecraft/event', async (req,res) => {
     res.status(500).json({error:'Failed to post Minecraft event'});
   }
 });
-app.post('/api/v1/strikes/action',async(req,res)=>{try{const r=applyActionTx(req.body);res.json(r);await syncActiveEntry(req.body.playerUuid).catch(console.error);}catch(e){res.status(400).json({error:e.message});}});
+app.post(['/api/v1/strikes/action','/api/v1/strikes/propose'],async(req,res)=>{
+  try {
+    const proposalId=createProposal({...req.body,staffIdentity:req.body.staffIdentity||'Minecraft staff'});
+    await publishProposal(proposalId);
+    const proposal=db.prepare(`SELECT * FROM pending_strike_proposals WHERE proposal_id=?`).get(proposalId);
+    res.status(202).json({ok:true,pending:true,proposalId,username:proposal.username,action:proposal.action,amount:proposal.amount,message:'Sent to the owner for approval; the strike total is unchanged until approval.'});
+  } catch(e) { res.status(400).json({error:e.message}); }
+});
 app.listen(PORT,'0.0.0.0',()=>console.log(`KIND BOSS Strikes API listening on ${PORT}`));
 
 function managementEmbed(){return new EmbedBuilder().setTitle('KIND SMP Strike Management').setDescription('Staff can add strikes, remove strikes, or view the current active-strike list. Minecraft and Discord use the same Railway database.');}
@@ -158,6 +241,7 @@ async function ensurePanel(){
   db.prepare(`INSERT INTO app_state(key,value) VALUES('panel_message_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(m.id);
 }
 function allowed(i){return i.guildId===GUILD_ID && STAFF_ROLE_IDS.some(id => i.member?.roles?.cache?.has(id));}
+function owner(i){return i.guildId===GUILD_ID && i.member?.roles?.cache?.has(OWNER_ROLE_ID);}
 const PAGE_SIZE = 25;
 const allPlayers = () => db.prepare(`
   SELECT p.uuid, p.username, COALESCE(s.total, 0) AS total
@@ -248,9 +332,50 @@ function actionModal(kind, player) {
 
 client.once(Events.ClientReady, async () => {
   console.log(`Strike system logged in as ${client.user.tag}`);
+  try { await ensureApprovalChannel(); }
+  catch (error) { console.error('Owner-only strike approval channel setup failed:', error.message); }
   await ensurePanel();
   await syncAll();
+  retryProposalPosts();
 });
+
+async function retryProposalPosts() {
+  if (!client.isReady() || !strikeApprovalChannelId) return;
+  for (const proposal of db.prepare(`SELECT proposal_id FROM pending_strike_proposals WHERE status='pending' AND message_id IS NULL ORDER BY created_at LIMIT 10`).all()) {
+    try { await publishProposal(proposal.proposal_id); }
+    catch (error) { console.error('Could not publish strike approval request:', error.message); break; }
+  }
+}
+const proposalRetryTimer=setInterval(retryProposalPosts,30000);
+proposalRetryTimer.unref?.();
+
+async function ensureApprovalChannel() {
+  if (strikeApprovalChannelId) {
+    const existing = await client.channels.fetch(strikeApprovalChannelId).catch(() => null);
+    if (existing?.isTextBased()) return existing;
+    throw new Error('STRIKE_APPROVAL_CHANNEL_ID does not point to an accessible text channel');
+  }
+  const guild = await client.guilds.fetch(GUILD_ID);
+  const ownerRole = await guild.roles.fetch(OWNER_ROLE_ID).catch(() => null);
+  if (!ownerRole) throw new Error('Owner role is unavailable; cannot lock down the approval channel');
+  const me = await guild.members.fetchMe();
+  if (!me.permissions.has(PermissionFlagsBits.ManageChannels)) throw new Error('The bot needs Manage Channels to create the private approval channel');
+  const channel = await guild.channels.create({
+    name: 'strike-approvals',
+    type: ChannelType.GuildText,
+    topic: 'Private owner-only queue for reviewing staff strike proposals.',
+    permissionOverwrites: [
+      { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: ownerRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+      { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages] }
+    ],
+    reason: 'Create the owner-only strike approval queue requested for Kind SMP'
+  });
+  strikeApprovalChannelId = channel.id;
+  db.prepare(`INSERT INTO app_state(key,value) VALUES('strike_approval_channel_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(channel.id);
+  console.log(`Created private owner-only strike approval channel ${channel.id}`);
+  return channel;
+}
 
 client.on(Events.InteractionCreate, async i => {
   try {
@@ -261,6 +386,21 @@ client.on(Events.InteractionCreate, async i => {
     // have their own InteractionCreate listeners. Without this prefix guard, an
     // applicant clicking an `sa:` button gets rejected by strike permissions.
     if (typeof i.customId !== 'string' || !i.customId.startsWith('strike:')) return;
+
+    if (i.isButton() && /^strike:(approve|deny)-proposal:/.test(i.customId)) {
+      if (!owner(i)) return i.reply({content:'Only the owner can approve or deny strike proposals.',flags:MessageFlags.Ephemeral});
+      const [,decision,id]=i.customId.split(':');
+      if (decision==='approve-proposal') {
+        const {proposal,result}=approveProposal(id,`${i.user.tag} (${i.user.id})`);
+        await syncActiveEntry(proposal.player_uuid).catch(console.error);
+        const punishment=result.punishment?` Punishment: ${result.punishment.type} for ${result.punishment.duration}.`:'';
+        await i.message.edit({embeds:[EmbedBuilder.from(i.message.embeds[0]).setColor(0x22c55e)],components:[],content:`Approved by <@${i.user.id}> · ${proposal.action} ${result.appliedAmount} strike(s) for **${proposal.username}**. New total: **${result.newTotal}**.${punishment}`,allowedMentions:{parse:[]}});
+        return i.reply({content:`Approved. **${proposal.username}** now has ${result.newTotal} strike(s).${punishment}`,flags:MessageFlags.Ephemeral});
+      }
+      const proposal=denyProposal(id,`${i.user.tag} (${i.user.id})`);
+      await i.message.edit({embeds:[EmbedBuilder.from(i.message.embeds[0]).setColor(0xef4444)],components:[],content:`Denied by <@${i.user.id}> · No strike change was applied for **${proposal.username}**.`,allowedMentions:{parse:[]}});
+      return i.reply({content:'Proposal denied. No strike was added or removed.',flags:MessageFlags.Ephemeral});
+    }
 
     if (!allowed(i)) {
       return i.reply({
@@ -351,8 +491,7 @@ client.on(Events.InteractionCreate, async i => {
         return i.reply({ content: 'A reason is required.', flags: MessageFlags.Ephemeral });
       }
 
-      const r = applyActionTx({
-        actionId: crypto.randomUUID(),
+      const proposalId=createProposal({
         playerUuid: player.uuid,
         username: player.username,
         action,
@@ -361,13 +500,8 @@ client.on(Events.InteractionCreate, async i => {
         source: 'discord',
         staffIdentity: `${i.user.tag} (${i.user.id})`
       });
-
-      await syncActiveEntry(player.uuid);
-
-      return i.reply({
-        content: `${action === 'add' ? 'Added' : 'Removed'} **${r.appliedAmount}** strike(s) ${action === 'add' ? 'to' : 'from'} **${r.username}**. New total: **${r.newTotal}**.`,
-        flags: MessageFlags.Ephemeral
-      });
+      await publishProposal(proposalId);
+      return i.reply({content:`Strike ${action} proposal sent to the owner for approval. No strike change is active yet. Proposal: ${proposalId.slice(0,8)}.`,flags:MessageFlags.Ephemeral});
     }
   } catch (e) {
     console.error(e);

@@ -6,6 +6,7 @@ const path = require('node:path');
 const { createApplicationDiscordLookup } = require('./playerDiscordLinks');
 const { punishmentFor, projectedTotal } = require('./strikePolicy');
 const { reversibleStrikeAmount } = require('./strikeAppealPolicy');
+const { createStaffCommandEmbed } = require('./staffAudit');
 const {
   Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
@@ -37,6 +38,7 @@ const STRIKE_MANAGEMENT_CHANNEL_ID = process.env.STRIKE_MANAGEMENT_CHANNEL_ID ||
 let strikeApprovalChannelId = process.env.STRIKE_APPROVAL_CHANNEL_ID || '';
 const OWNER_ROLE_ID = process.env.OWNER_ROLE_ID || '1555827222688829441';
 const MINECRAFT_FEED_CHANNEL_ID = process.env.MINECRAFT_FEED_CHANNEL_ID || '1555986926052315208';
+const STAFF_AUDIT_CHANNEL_ID = process.env.STAFF_AUDIT_CHANNEL_ID || '1561291135819714630';
 const STAFF_ROLE_IDS = [process.env.OWNER_ROLE_ID || '1555827222688829441', process.env.SENIOR_STAFF_ROLE_ID || '1555839917815238736', process.env.GENERAL_STAFF_ROLE_ID || '1555840026607362099'];
 const BEDROCK_PREFIX = '.';
 
@@ -322,9 +324,18 @@ app.post('/api/v1/staff/ranks/actions/ack',(req,res)=>{
 // Minecraft activity feed. Normal Minecraft chat is intentionally NOT accepted or posted.
 app.post('/api/v1/minecraft/event', async (req,res) => {
   try {
-    const { type, username, uuid, message } = req.body || {};
-    const allowedTypes = new Set(['server_online','server_offline','join','leave','advancement','death']);
+    const { type, username, uuid, message, staffReason } = req.body || {};
+    const allowedTypes = new Set(['server_online','server_offline','join','leave','advancement','death','staff_command']);
     if (!allowedTypes.has(type)) return res.status(400).json({error:'Unsupported event type'});
+
+    if (type === 'staff_command') {
+      if (!username || !uuid || !message) return res.status(400).json({error:'username, uuid, and command required'});
+      const channel = await client.channels.fetch(STAFF_AUDIT_CHANNEL_ID).catch(() => null);
+      if (!channel?.isTextBased()) return res.status(503).json({error:'Staff audit channel unavailable'});
+      const embed = createStaffCommandEmbed(EmbedBuilder,{username,uuid,command:message,reason:staffReason});
+      await channel.send({embeds:[embed],allowedMentions:{parse:[]}});
+      return res.json({ok:true});
+    }
 
     const channel = await client.channels.fetch(MINECRAFT_FEED_CHANNEL_ID).catch(() => null);
     if (!channel?.isTextBased()) return res.status(503).json({error:'Minecraft feed channel unavailable'});

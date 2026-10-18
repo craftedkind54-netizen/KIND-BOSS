@@ -112,6 +112,8 @@ The Paper bridge sends only server activity — not player chat:
 
 Player events use the Minecraft head as the Discord embed author icon, directly beside the event text.
 
+Staff command auditing posts every command attempted while a player is in CraftedCore staff mode, plus `/staff` and `/fj` entry/exit attempts, to `STAFF_AUDIT_CHANNEL_ID` (defaults to `1561291135819714630`). Each entry includes the Minecraft staff username, command, and saved staff-mode reason. The Paper bridge sends these entries over the authenticated `BRIDGE_SECRET` API; KindCore keeps its local audit record as well.
+
 Build the Paper 1.21.11 plugin:
 ```bash
 cd minecraft-plugin

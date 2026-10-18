@@ -80,6 +80,17 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         post("/api/v1/minecraft/event", body.toString());
     }
 
+    /** Sends a staff-mode command audit entry through the authenticated shared API. */
+    public void logStaffCommand(Player player, String command, String staffReason) {
+        if (player == null) return;
+        StringBuilder body = new StringBuilder("{\"type\":\"staff_command\"")
+                .append(",\"uuid\":\"").append(esc(player.getUniqueId().toString())).append("\"")
+                .append(",\"username\":\"").append(esc(player.getName())).append("\"")
+                .append(",\"message\":\"").append(esc(command == null ? "" : command)).append("\"")
+                .append(",\"staffReason\":\"").append(esc(staffReason == null ? "" : staffReason)).append("\"}");
+        post("/api/v1/minecraft/event", body.toString());
+    }
+
     private void syncPlayer(Player p) {
         post("/api/v1/players/upsert", "{\"uuid\":\""+esc(p.getUniqueId().toString())+"\",\"username\":\""+esc(p.getName())+"\"}");
     }

@@ -266,7 +266,7 @@ app.use('/api/v1',auth);
 function activeGoalSettingsEmbed(){
   const g=activePlayerGoal.snapshot();
   return new EmbedBuilder().setColor(0x5865f2).setTitle('Active Player Goal — Owner Controls')
-    .setDescription('Set the simultaneous player target, daily time requirement, and any prize description. The prize is displayed for players; staff arrange it manually.')
+    .setDescription('Set how many players must be visible on the Minecraft tab list at the same time, the daily time requirement, and any prize description. The timer counts only while the tab-list count meets the target. The prize is displayed for players; staff arrange it manually.')
     .addFields({name:'Current goal',value:`${g.targetPlayers} players · ${Math.round(g.requiredSeconds/60)} minutes per day`,inline:true},{name:'Current prize',value:g.prize||'No prize set',inline:true},{name:'Timezone',value:g.timezone,inline:true});
 }
 function activeGoalSettingsRows(){return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('activegoal:set').setLabel('Set Active Goal').setStyle(ButtonStyle.Primary))];}
@@ -292,11 +292,11 @@ function activeGoalProgressEmbed(){
 
   return new EmbedBuilder().setColor(0x35c5b5)
     .setTitle('🏆 KIND SMP · Weekly Player Goal')
-    .setDescription(`Get everyone online and help the server reach its community goal!\n\nKeep **${g.targetPlayers} players online together** for **${formatDuration(g.requiredSeconds)} each day**. Meet the target on **7 days in a row** to complete the challenge.`)
+    .setDescription(`Get everyone online and help the server reach its community goal!\n\nKeep at least **${g.targetPlayers} players on the tab list at the same time** for **${formatDuration(g.requiredSeconds)} each day**. The timer advances only while the tab-list count meets the target. Meet it on **7 days in a row** to complete the challenge.`)
     .addFields(
-      {name:'👥 Players online now',value:liveCount,inline:true},
+      {name:'👥 Players on tab list now',value:liveCount,inline:true},
       {name:'🔥 Weekly streak',value:streakProgress,inline:true},
-      {name:'⏱️ Today’s progress',value:todayProgress,inline:false},
+      {name:'⏱️ Time with enough players',value:todayProgress,inline:false},
       {name:'🎁 Prize',value:g.prize||'The owner has not chosen a prize yet.',inline:false}
     )
     .setFooter({text:`A missed day resets the streak · Timezone: ${g.timezone}`});
@@ -330,7 +330,7 @@ async function refreshActiveGoalProgress(force=false){
 function activeGoalModal(){
   const g=activePlayerGoal.snapshot();
   const modal=new ModalBuilder().setCustomId('activegoal:configure').setTitle('Configure Active Goal');
-  modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('players').setLabel('Players online at the same time').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(3).setValue(String(g.targetPlayers))),
+  modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('players').setLabel('Players on tab list at the same time').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(3).setValue(String(g.targetPlayers))),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('minutes').setLabel('Required minutes per day').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(4).setValue(String(Math.round(g.requiredSeconds/60)))),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('prize').setLabel('Prize (optional)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(200).setValue(g.prize||'')));
   return modal;

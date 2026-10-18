@@ -284,21 +284,24 @@ function activeGoalProgressEmbed(){
   };
   const liveCount=g.sampleFresh
     ? `**${g.onlinePlayers} / ${g.targetPlayers}**\n${progressBar(g.onlinePlayers,g.targetPlayers,8)}`
-    : '⏳ Waiting for Minecraft server data';
+    : `⏳ Waiting for Minecraft server data\n**Target: ${g.targetPlayers} players**`;
+  const enoughPlayers=g.sampleFresh&&g.onlinePlayers>=g.targetPlayers;
+  const remainingSeconds=Math.max(0,g.requiredSeconds-g.secondsToday);
   const todayProgress=g.dayQualified
-    ? `✅ **Complete**\n${progressBar(g.requiredSeconds,g.requiredSeconds,8)}\n**${formatDuration(g.requiredSeconds)} / ${formatDuration(g.requiredSeconds)}**`
-    : `${progressBar(g.secondsToday,g.requiredSeconds,8)}\n**${formatDuration(g.secondsToday)} / ${formatDuration(g.requiredSeconds)}**`;
+    ? `✅ **Daily countdown complete**\n${progressBar(g.requiredSeconds,g.requiredSeconds,8)}\n**${formatDuration(g.requiredSeconds)} reached**`
+    : `${enoughPlayers?'🟢 **Countdown active**':'⏸️ **Paused**'}\n${progressBar(g.secondsToday,g.requiredSeconds,8)}\n**${formatDuration(remainingSeconds)} remaining**${enoughPlayers?'':`\nNeed **${g.targetPlayers} players online** to start`}`;
   const streakProgress=`${progressBar(g.streak,7,7)}\n**${g.streak} / 7 days**`;
 
   return new EmbedBuilder().setColor(0x35c5b5)
-    .setTitle('🏆 KIND SMP · WEEKLY PLAYER GOAL')
-    .setDescription(`**${g.targetPlayers} players on the tab list · ${formatDuration(g.requiredSeconds)} each day · 7 days in a row**\nThe daily timer advances only while the tab-list count meets the target.`)
+    .setTitle('🏆 KIND SMP ACTIVE PLAYER GOAL')
+    .setDescription(`**${g.targetPlayers} players online · ${formatDuration(g.requiredSeconds)} daily countdown · 7-day streak**\nPlayer goal tracking is active **24/7**. The countdown starts only after the player target is reached and pauses if the count drops below it.`)
     .addFields(
-      {name:'👥 PLAYERS ONLINE',value:liveCount,inline:true},
-      {name:'⏱️ TODAY',value:todayProgress,inline:true},
+      {name:'👤 PLAYERS RIGHT NOW',value:liveCount,inline:true},
+      {name:'⏱️ COUNTDOWN',value:todayProgress,inline:true},
       {name:'🔥 WEEKLY STREAK',value:streakProgress,inline:true},
       {name:'🎁 PRIZE',value:g.prize?`✨ **${g.prize}**`:'The owner has not chosen a prize yet.',inline:false}
     )
+    .setThumbnail('https://mc-heads.net/avatar/Steve/128')
     .setFooter({text:`A missed day resets the streak · Timezone: ${g.timezone}`});
 }
 async function upsertGoalMessage(channelId,key,embed,components=[]){

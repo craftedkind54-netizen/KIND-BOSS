@@ -18,6 +18,7 @@ const {
   Events,
   PermissionsBitField,
 } = require('discord.js');
+const { isAnnouncementModalId, requiresAnnouncementApproval } = require('./announcementPolicy');
 
 // =====================================================
 // CRAFTED SMP ANNOUNCEMENT BOT
@@ -34,6 +35,11 @@ const FLASH_CHANNEL_ID = process.env.FLASH_CHANNEL_ID || '1555845538551963678';
 const CONTROL_CHANNEL_ID = process.env.CONTROL_CHANNEL_ID || process.env.ANNOUNCEMENTS_CHANNEL_ID || '1555825214045163520';
 const EVENTS_CHANNEL_ID = process.env.EVENTS_CHANNEL_ID || '1555840522143277056';
 const POLLS_CHANNEL_ID = process.env.POLLS_CHANNEL_ID || '1555840657434615928';
+const ANNOUNCEMENT_APPROVAL_CHANNEL_ID = process.env.ANNOUNCEMENT_APPROVAL_CHANNEL_ID || '1561463274350977154';
+const OWNER_ROLE_ID = process.env.OWNER_ROLE_ID || '1555827222688829441';
+const CO_OWNER_ROLE_ID = process.env.CO_OWNER_ROLE_ID || OWNER_ROLE_ID;
+const GENERAL_STAFF_ROLE_ID = process.env.GENERAL_STAFF_ROLE_ID || '1555840026607362099';
+const SENIOR_STAFF_ROLE_ID = process.env.SENIOR_STAFF_ROLE_ID || '1555839917815238736';
 
 // =====================================================
 // NOTIFICATION ROLE IDS
@@ -51,8 +57,20 @@ const DATA_DIR = process.env.PERSISTENT_DATA_DIR || process.env.DATA_DIR || '/da
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const SCHEDULE_FILE = path.join(DATA_DIR, 'scheduled-content.json');
+const PENDING_APPROVAL_FILE = path.join(DATA_DIR, 'pending-announcement-approvals.json');
 console.log(`[Announcements] Persistent schedule file: ${SCHEDULE_FILE}`);
 const drafts = new Map();
+
+function loadAnnouncementApprovals() {
+  try { return JSON.parse(fs.readFileSync(PENDING_APPROVAL_FILE, 'utf8') || '[]'); }
+  catch (error) { if (error.code !== 'ENOENT') console.error('Announcement approval read error:', error); return []; }
+}
+
+function saveAnnouncementApprovals(approvals) {
+  const temporary = `${PENDING_APPROVAL_FILE}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(approvals, null, 2));
+  fs.renameSync(temporary, PENDING_APPROVAL_FILE);
+}
 
 // =====================================================
 // DISCORD CLIENT
@@ -92,7 +110,21 @@ function clone(data) {
 }
 
 function isStaff(interaction) {
-  return interaction.member?.permissions?.has(PermissionsBitField.Flags.ManageGuild);
+  return interaction.member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)
+    || [OWNER_ROLE_ID, CO_OWNER_ROLE_ID, SENIOR_STAFF_ROLE_ID, GENERAL_STAFF_ROLE_ID]
+      .some(id => interaction.member?.roles?.cache?.has(id));
+}
+
+function isOwnerOrCoOwner(interaction) {
+  return interaction.guild?.ownerId === interaction.user?.id
+    || [OWNER_ROLE_ID, CO_OWNER_ROLE_ID].some(id => interaction.member?.roles?.cache?.has(id));
+}
+
+function needsAnnouncementApproval(interaction, draft) {
+  const roleIds = [];
+  if (interaction.member?.roles?.cache?.has(GENERAL_STAFF_ROLE_ID)) roleIds.push('general-staff');
+  if (interaction.member?.roles?.cache?.has(SENIOR_STAFF_ROLE_ID)) roleIds.push('senior-staff');
+  return requiresAnnouncementApproval({ type: draft.type, roleIds, owner: isOwnerOrCoOwner(interaction) || interaction.guild?.ownerId === interaction.user?.id });
 }
 
 function hasAnnouncement(type) {
@@ -1057,6 +1089,83 @@ async function postDraft(draft) {
   return result;
 }
 
+function announcementApprovalPayload(item) {
+  const { draft } = item;
+  const kind = draft.type.replaceAll('_', ' ');
+  const description = [
+    `**Submitted by:** <@${item.userId}>`,
+    `**Content:** ${kind}`,
+    draft.schedule?.enabled ? `**Scheduled for:** <t:${draft.schedule.timestamp}:F>` : '**Action:** Post when approved',
+    draft.announcement?.title ? `**Title:** ${draft.announcement.title}` : '',
+    draft.announcement?.pingEveryone ? '**Ping:** @everyone (only sent if approved)' : '',
+  ].filter(Boolean).join('\n');
+  const embeds = [new EmbedBuilder().setColor(0xf0b429).setTitle('📣 Announcement Approval Needed').setDescription(description)];
+  if (hasAnnouncement(draft.type)) embeds.push(draft.type === 'flash' ? flashEmbed(draft) : announcementEmbed(draft));
+  for (const event of (draft.events || []).slice(0, 5)) embeds.push(eventEmbed(event));
+  if (hasPoll(draft.type)) embeds.push(pollPreview(draft));
+  const components = [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`approve_announcement:${item.id}`).setLabel('Approve').setEmoji('✅').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`reject_announcement:${item.id}`).setLabel('Reject').setEmoji('❌').setStyle(ButtonStyle.Danger)
+  )];
+  return { embeds, components };
+}
+
+async function queueAnnouncementApproval(draft, userId) {
+  const channel = await client.channels.fetch(ANNOUNCEMENT_APPROVAL_CHANNEL_ID).catch(() => null);
+  if (!channel?.isTextBased() || !channel.send) throw new Error(`Announcement approval channel ${ANNOUNCEMENT_APPROVAL_CHANNEL_ID} is unavailable.`);
+  const item = { id: makeId(), userId, submittedAt: new Date().toISOString(), status: 'pending', draft: clone(draft) };
+  const approvals = loadAnnouncementApprovals();
+  approvals.push(item);
+  saveAnnouncementApprovals(approvals);
+  try {
+    const message = await channel.send({ ...announcementApprovalPayload(item), allowedMentions: { parse: [] } });
+    item.messageId = message.id;
+    saveAnnouncementApprovals(approvals);
+    return item;
+  } catch (error) {
+    saveAnnouncementApprovals(approvals.filter(entry => entry.id !== item.id));
+    throw error;
+  }
+}
+
+async function decideAnnouncementApproval(interaction, decision, id) {
+  if (!isOwnerOrCoOwner(interaction)) {
+    return interaction.reply({ content: '❌ Only the Owner or Co-Owner can approve staff announcements.', ephemeral: true });
+  }
+  const approvals = loadAnnouncementApprovals();
+  const item = approvals.find(entry => entry.id === id && entry.status === 'pending');
+  if (!item) return interaction.reply({ content: '❌ This approval is no longer pending.', ephemeral: true });
+
+  if (decision === 'reject') {
+    saveAnnouncementApprovals(approvals.filter(entry => entry.id !== id));
+    return interaction.update({ content: `❌ Rejected by <@${interaction.user.id}>.`, embeds: interaction.message.embeds, components: [] });
+  }
+
+  item.status = 'processing';
+  saveAnnouncementApprovals(approvals);
+  await interaction.deferUpdate();
+  try {
+    let resultText;
+    if (item.draft.schedule?.enabled) {
+      if (item.draft.editingScheduledId) replaceSchedule(item.draft.editingScheduledId, item.draft);
+      else addSchedule(item.draft);
+      resultText = `✅ Approved by <@${interaction.user.id}> and scheduled for <t:${item.draft.schedule.timestamp}:F>.`;
+    } else {
+      const result = await postDraft(item.draft);
+      await sendReleasedFlashNotice(item.draft, result);
+      if (item.draft.editingScheduledId) removeSchedule(item.draft.editingScheduledId);
+      resultText = `✅ Approved by <@${interaction.user.id}> and posted.`;
+    }
+    saveAnnouncementApprovals(approvals.filter(entry => entry.id !== id));
+    return interaction.editReply({ content: resultText, embeds: interaction.message.embeds, components: [] });
+  } catch (error) {
+    item.status = 'pending';
+    saveAnnouncementApprovals(approvals);
+    console.error('[Announcements] Approval release failed:', error);
+    return interaction.followUp({ content: `❌ Could not release this announcement: ${error.message}`, ephemeral: true });
+  }
+}
+
 async function sendScheduledFlashNotice(draft, edited = false) {
   let channel;
   try {
@@ -1277,14 +1386,13 @@ function isAnnouncementComponent(interaction) {
   ]);
   const prefixes = [
     'scheduled_post:', 'scheduled_cancel:', 'scheduled_edit:',
-    'poll_answer_', 'poll_answers_'
+    'poll_answer_', 'poll_answers_', 'approve_announcement:', 'reject_announcement:'
   ];
   return exact.has(id) || prefixes.some((prefix) => id.startsWith(prefix));
 }
 
 function isAnnouncementModal(interaction) {
-  const id = interaction.customId || '';
-  return id === 'announcement_modal' || id === 'poll_setup' || id === 'poll_answer_modal' || id === 'event_modal';
+  return isAnnouncementModalId(interaction.customId || '');
 }
 
 client.on(Events.InteractionCreate, async interaction => {
@@ -1296,6 +1404,9 @@ client.on(Events.InteractionCreate, async interaction => {
     if (!isStaff(interaction)) {
       return interaction.reply({ content: '❌ You need Manage Server permission.', ephemeral: true });
     }
+
+    const approvalMatch = /^(approve|reject)_announcement:(.+)$/.exec(interaction.customId || '');
+    if (interaction.isButton() && approvalMatch) return decideAnnouncementApproval(interaction, approvalMatch[1], approvalMatch[2]);
 
     if (interaction.isButton() && interaction.customId === 'create_content') {
       return interaction.reply({
@@ -1407,6 +1518,15 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       await interaction.deferUpdate();
+      if (needsAnnouncementApproval(interaction, draft)) {
+        try {
+          await queueAnnouncementApproval(draft, interaction.user.id);
+          drafts.delete(interaction.user.id);
+          return interaction.editReply({ content: `⏳ Sent to <#${ANNOUNCEMENT_APPROVAL_CHANNEL_ID}> for Owner/Co-Owner approval. It will post after approval.`, embeds: [], components: [] });
+        } catch (error) {
+          return interaction.editReply({ content: `❌ Could not submit for approval: ${error.message}`, embeds: [], components: [] });
+        }
+      }
       const result = await postDraft(draft);
       await sendReleasedFlashNotice(draft, result);
 
@@ -1565,6 +1685,19 @@ client.on(Events.InteractionCreate, async interaction => {
       draft.schedule.flashReminderSent = false;
 
       const wasEditing = Boolean(draft.editingScheduledId);
+      if (needsAnnouncementApproval(interaction, draft)) {
+        await interaction.deferUpdate();
+        try {
+          await queueAnnouncementApproval(draft, interaction.user.id);
+          drafts.delete(interaction.user.id);
+          return interaction.editReply({
+            content: `⏳ Sent to <#${ANNOUNCEMENT_APPROVAL_CHANNEL_ID}> for Owner/Co-Owner approval. The schedule will be saved after approval.`,
+            embeds: [], components: [],
+          });
+        } catch (error) {
+          return interaction.editReply({ content: `❌ Could not submit for approval: ${error.message}`, embeds: [], components: [] });
+        }
+      }
       if (wasEditing) replaceSchedule(draft.editingScheduledId, draft);
       else addSchedule(draft);
 

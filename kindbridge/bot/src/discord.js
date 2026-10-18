@@ -4,6 +4,7 @@ import { Client, GatewayIntentBits, MessageFlags, PermissionFlagsBits, SlashComm
 import { submit, decide, joining } from './applications.js';
 import { quotaDay, channelTarget } from './youtube.js';
 import { createNotifications } from './notifications.js';
+import { isOwnedApplicationPanel } from './applicationPanelPolicy.js';
 import { createHash } from 'node:crypto';
 
 const ephemeral = MessageFlags.Ephemeral;
@@ -24,6 +25,12 @@ export const applicationForm = edition => form(`application-single:${edition}`, 
   ['why', 'Why do you want to join?', 1000, true],
   ['youtube', 'YouTube channel link (optional)', 200, false, false]
 ]);
+function applicationPanelBody(c) {
+  return {
+    content: `## Welcome to Kind SMP\nApply to join our Java and Bedrock SMP. You must be **13 or older**.\nRead <#${c.rules}> first. Answers are shared with staff in a private review channel.\nNew Minecraft account? Use /apply again; staff approval is required. One pending application per person. Reapply ${c.cooldown / 3600000} hours after rejection.\nApply and add your optional YouTube channel in one form. By submitting, you agree to follow the SMP rules. The supplied channel is linked automatically after staff approval and whitelisting.`,
+    components: [row(button('edition:java','Apply · Java'), button('edition:bedrock','Apply · Bedrock'))]
+  };
+}
 // Only used to finish drafts opened before the single-form update.
 const youtubeForm = () => form('application:youtube', 'Kind SMP application · 2 of 2', [['youtube', 'YouTube channel link (optional)', 200, false, false]]);
 
@@ -68,8 +75,18 @@ export function createDiscord(store, c, yt, sharedClient = null) {
       const merged = new Map(existing.map(command => [command.name, command.toJSON()]));
       for (const command of commands) merged.set(command.name, command);
       await guild.commands.set([...merged.values()]);
+      const channel = await client.channels.fetch(c.apply);
+      const body = applicationPanelBody(c);
+      const storedPanelId = store.get('applicationPanel');
+      const storedPanel = storedPanelId ? await channel.messages.fetch(storedPanelId).catch(() => null) : null;
+      if (isOwnedApplicationPanel(storedPanel, client.user.id)) await storedPanel.edit(body);
+      else {
+        const message = await send(c.apply, body);
+        store.set('applicationPanel', message.id);
+        console.log(`[Kind SMP Applications] Published an active application panel from ${client.user.tag}.`);
+      }
       console.log('Kind SMP connected. Staff can run /setup.');
-    } catch (e) { console.error('Discord command setup failed:', e.message); process.exitCode = 1; await client.destroy(); }
+    } catch (e) { console.error('Discord command or application panel setup failed:', e.message); }
   });
   const starts = new Map();
   const userLocks = new Set();
@@ -92,9 +109,9 @@ export function createDiscord(store, c, yt, sharedClient = null) {
           const role = await guild.roles.fetch(roleId);
           if (!role || role.managed || me.roles.highest.comparePositionTo(role) <= 0 || !me.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('Move the bot role above SMP Member and YouTuber, and give it Manage Roles.');
         }
-        const body = { content: `## Welcome to Kind SMP\nApply to join our Java and Bedrock SMP. You must be **13 or older**.\nRead <#${c.rules}> first. Answers are shared with staff in a private review channel.\nNew Minecraft account? Use /apply again; staff approval is required. One pending application per person. Reapply ${c.cooldown / 3600000} hours after rejection.\nApply and add your optional YouTube channel in one form. By submitting, you agree to follow the SMP rules. The supplied channel is linked automatically after staff approval and whitelisting.`, components: [row(button('edition:java','Apply · Java'), button('edition:bedrock','Apply · Bedrock'))] };
+        const body = applicationPanelBody(c);
         const panelId = store.get('applicationPanel');
-        if (panelId) { try { const ch = await client.channels.fetch(c.apply); const m = await ch.messages.fetch(panelId); await m.edit(body); return reply('Application panel updated.'); } catch { /* Recreate a deleted panel. */ } }
+        if (panelId) { try { const ch = await client.channels.fetch(c.apply); const m = await ch.messages.fetch(panelId); if (isOwnedApplicationPanel(m, client.user.id)) { await m.edit(body); return reply('Application panel updated.'); } } catch { /* Recreate a deleted panel. */ } }
         const msg = await send(c.apply, body); store.set('applicationPanel', msg.id); return reply('Application panel posted.');
       }
       if (id === 'apply') return i.reply({ content: `Read <#${c.rules}> before applying. Submitting your application confirms you agree to follow the SMP rules. Already a member with a new account? Apply again here. Your current membership stays active during review. Existing YouTube links are retained; ask staff to change your channel. Choose the account you will join with:`, components: [row(button('edition:java','Java'),button('edition:bedrock','Bedrock'))], flags: ephemeral });

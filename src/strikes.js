@@ -280,24 +280,24 @@ function activeGoalProgressEmbed(){
   };
   const progressBar=(value,max,segments=10)=>{
     const filled=Math.max(0,Math.min(segments,Math.floor((value/Math.max(1,max))*segments)));
-    return `\`${'▰'.repeat(filled)}${'▱'.repeat(segments-filled)}\``;
+    return `\`${'■'.repeat(filled)}${'□'.repeat(segments-filled)}\``;
   };
   const liveCount=g.sampleFresh
-    ? `${progressBar(g.onlinePlayers,g.targetPlayers)}\n**${g.onlinePlayers} / ${g.targetPlayers} players**`
+    ? `**${g.onlinePlayers} / ${g.targetPlayers}**\n${progressBar(g.onlinePlayers,g.targetPlayers,8)}`
     : '⏳ Waiting for Minecraft server data';
   const todayProgress=g.dayQualified
-    ? `✅ **Daily target complete**\n${progressBar(g.requiredSeconds,g.requiredSeconds)}  ${formatDuration(g.requiredSeconds)} / ${formatDuration(g.requiredSeconds)}`
-    : `${progressBar(g.secondsToday,g.requiredSeconds)}\n**${formatDuration(g.secondsToday)} / ${formatDuration(g.requiredSeconds)}** with enough players online`;
+    ? `✅ **Complete**\n${progressBar(g.requiredSeconds,g.requiredSeconds,8)}\n**${formatDuration(g.requiredSeconds)} / ${formatDuration(g.requiredSeconds)}**`
+    : `${progressBar(g.secondsToday,g.requiredSeconds,8)}\n**${formatDuration(g.secondsToday)} / ${formatDuration(g.requiredSeconds)}**`;
   const streakProgress=`${progressBar(g.streak,7,7)}\n**${g.streak} / 7 days**`;
 
   return new EmbedBuilder().setColor(0x35c5b5)
-    .setTitle('🏆 KIND SMP · Weekly Player Goal')
-    .setDescription(`Get everyone online and help the server reach its community goal!\n\nKeep at least **${g.targetPlayers} players on the tab list at the same time** for **${formatDuration(g.requiredSeconds)} each day**. The timer advances only while the tab-list count meets the target. Meet it on **7 days in a row** to complete the challenge.`)
+    .setTitle('🏆 KIND SMP · WEEKLY PLAYER GOAL')
+    .setDescription(`**${g.targetPlayers} players on the tab list · ${formatDuration(g.requiredSeconds)} each day · 7 days in a row**\nThe daily timer advances only while the tab-list count meets the target.`)
     .addFields(
-      {name:'👥 Players on tab list now',value:liveCount,inline:true},
-      {name:'🔥 Weekly streak',value:streakProgress,inline:true},
-      {name:'⏱️ Time with enough players',value:todayProgress,inline:false},
-      {name:'🎁 Prize',value:g.prize||'The owner has not chosen a prize yet.',inline:false}
+      {name:'👥 PLAYERS ONLINE',value:liveCount,inline:true},
+      {name:'⏱️ TODAY',value:todayProgress,inline:true},
+      {name:'🔥 WEEKLY STREAK',value:streakProgress,inline:true},
+      {name:'🎁 PRIZE',value:g.prize?`✨ **${g.prize}**`:'The owner has not chosen a prize yet.',inline:false}
     )
     .setFooter({text:`A missed day resets the streak · Timezone: ${g.timezone}`});
 }

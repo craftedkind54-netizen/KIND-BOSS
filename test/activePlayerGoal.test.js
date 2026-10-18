@@ -57,3 +57,26 @@ test('editing only the prize keeps the active timer', () => {
   assert.equal(goal.snapshot().prize, 'Updated prize');
   db.close();
 });
+
+test('reports a time-weighted average active player count over fresh sample intervals', () => {
+  const { db, goal, setNow } = setup();
+  const start = Date.parse('2026-10-18T00:00:00Z');
+  setNow(start); goal.recordSample(4, start);
+  setNow(start + 60_000); goal.recordSample(6, start + 60_000);
+  setNow(start + 120_000); goal.recordSample(2, start + 120_000);
+  const progress = goal.snapshot(start + 120_000);
+  assert.equal(progress.averageOnlinePlayers, 5);
+  assert.equal(progress.averageCoverageSeconds, 120);
+  assert.equal(progress.averageWindowSeconds, 7 * 24 * 60 * 60);
+  db.close();
+});
+
+test('does not count stale sample time toward the rolling average', () => {
+  const { db, goal } = setup();
+  const start = Date.parse('2026-10-18T00:00:00Z');
+  goal.recordSample(10, start);
+  const progress = goal.snapshot(start + 120_000);
+  assert.equal(progress.averageOnlinePlayers, 10);
+  assert.equal(progress.averageCoverageSeconds, 90);
+  db.close();
+});

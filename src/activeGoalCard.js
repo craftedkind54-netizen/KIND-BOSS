@@ -115,8 +115,10 @@ function createActiveGoalCard(goal) {
   const label = count === null ? 'WAITING' : `${count} / ${target}`;
 
   // Replace the placeholder in the Players Online tile with the live tab-list count.
-  paintRect(image, 235, 482, 365, 52, [9, 27, 40]);
-  drawText(image, label, 250, 490, 5, [56, 224, 242]);
+  paintRect(image, 235, 482, 365, 62, [9, 27, 40]);
+  drawText(image, label, 250, 486, 4, [56, 224, 242]);
+  const average = goal.averageOnlinePlayers == null ? 'COLLECTING' : `7D AVG ${Math.round(goal.averageOnlinePlayers)}`;
+  drawText(image, average, 250, 518, 3, [139, 209, 222]);
 
   // Fill the tile's 15-cell meter to show how close the server is to its target.
   if (count !== null) {

@@ -2,6 +2,7 @@
 
 const DEFAULTS = Object.freeze({ targetPlayers: 5, requiredSeconds: 2 * 60 * 60, prize: '', timezone: 'Pacific/Honolulu' });
 const MAX_SAMPLE_GAP_SECONDS = 90;
+const AVERAGE_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 
 function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => Date.now() } = {}) {
   db.exec(`
@@ -9,6 +10,10 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
       local_day TEXT PRIMARY KEY, seconds INTEGER NOT NULL DEFAULT 0,
       qualified INTEGER NOT NULL DEFAULT 0, qualified_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS active_player_samples (
+      sampled_at INTEGER PRIMARY KEY, online_players INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS active_player_samples_time ON active_player_samples(sampled_at);
   `);
 
   const stateKey = 'active_player_goal_state';
@@ -56,6 +61,10 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
 
   function recordSample(onlinePlayers, timestamp = now()) {
     if (!Number.isSafeInteger(onlinePlayers) || onlinePlayers < 0 || onlinePlayers > 10000) throw new Error('Invalid online player count.');
+    const windowStart = timestamp - AVERAGE_WINDOW_SECONDS * 1000;
+    db.prepare(`INSERT INTO active_player_samples(sampled_at,online_players) VALUES(?,?)
+      ON CONFLICT(sampled_at) DO UPDATE SET online_players=excluded.online_players`).run(timestamp, onlinePlayers);
+    db.prepare('DELETE FROM active_player_samples WHERE sampled_at<?').run(windowStart - MAX_SAMPLE_GAP_SECONDS * 1000);
     const settings = readSettings();
     const day = getDay(timestamp);
     let state = readState();
@@ -99,6 +108,8 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
 
   function markOffline(timestamp = now()) {
     const state = readState();
+    db.prepare(`INSERT INTO active_player_samples(sampled_at,online_players) VALUES(?,0)
+      ON CONFLICT(sampled_at) DO UPDATE SET online_players=0`).run(timestamp);
     state.lastSampleAt = null;
     state.lastOnline = 0;
     writeState(state);
@@ -116,11 +127,28 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
     const dayQualified = currentDay && Boolean(state.dayQualified);
     const yesterday = getPreviousDay(day);
     const streak = state.lastQualifiedDay === day || state.lastQualifiedDay === yesterday ? Number(state.streak || 0) : 0;
+    const averageWindowStart = timestamp - AVERAGE_WINDOW_SECONDS * 1000;
+    const samples = db.prepare(`SELECT sampled_at,online_players FROM active_player_samples
+      WHERE sampled_at>=? AND sampled_at<=? ORDER BY sampled_at ASC`)
+      .all(averageWindowStart - MAX_SAMPLE_GAP_SECONDS * 1000, timestamp);
+    let activePlayerSeconds = 0;
+    let averageCoverageSeconds = 0;
+    for (let index = 0; index < samples.length; index++) {
+      const sample = samples[index];
+      const start = Math.max(averageWindowStart, Number(sample.sampled_at));
+      const nextSampleAt = index + 1 < samples.length ? Number(samples[index + 1].sampled_at) : timestamp;
+      const end = Math.min(timestamp, nextSampleAt, Number(sample.sampled_at) + MAX_SAMPLE_GAP_SECONDS * 1000);
+      const seconds = Math.max(0, (end - start) / 1000);
+      activePlayerSeconds += seconds * Number(sample.online_players);
+      averageCoverageSeconds += seconds;
+    }
+    const averageOnlinePlayers = averageCoverageSeconds > 0 ? activePlayerSeconds / averageCoverageSeconds : null;
     return { ...settings, day, onlinePlayers: online, sampleFresh: Number.isFinite(sampleAge) && sampleAge <= MAX_SAMPLE_GAP_SECONDS,
-      secondsToday: daySeconds, dayQualified, streak };
+      secondsToday: daySeconds, dayQualified, streak, averageOnlinePlayers, averageCoverageSeconds,
+      averageWindowSeconds: AVERAGE_WINDOW_SECONDS };
   }
 
   return { setGoal, recordSample, markOffline, snapshot };
 }
 
-module.exports = { createActivePlayerGoal, DEFAULTS, MAX_SAMPLE_GAP_SECONDS };
+module.exports = { createActivePlayerGoal, DEFAULTS, MAX_SAMPLE_GAP_SECONDS, AVERAGE_WINDOW_SECONDS };

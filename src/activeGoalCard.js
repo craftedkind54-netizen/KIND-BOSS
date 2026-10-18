@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
 
-const CARD_VERSION = 2;
+const CARD_VERSION = 3;
 const REFERENCE_CARD = fs.readFileSync(path.join(__dirname, 'assets', 'active-goal-reference-v2.png'));
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const FONT = {
@@ -26,6 +26,7 @@ const FONT = {
   'U': ['10001','10001','10001','10001','10001','10001','01110'], 'V': ['10001','10001','10001','10001','10001','01010','00100'],
   'W': ['10001','10001','10001','10101','10101','10101','01010'], 'X': ['10001','10001','01010','00100','01010','10001','10001'],
   'Y': ['10001','10001','01010','00100','00100','00100','00100'], 'Z': ['11111','00001','00010','00100','01000','10000','11111'],
+  '%': ['11001','11010','00100','01000','10110','00110','00000'],
   '/': ['00001','00010','00010','00100','01000','01000','10000'], '-': ['00000','00000','00000','11111','00000','00000','00000'],
   ' ': ['00000','00000','00000','00000','00000','00000','00000']
 };
@@ -129,6 +130,29 @@ function createActiveGoalCard(goal) {
       paintRect(image, 131 + index * 31.9, 554, 25, 33, shade, 0.9);
     }
   }
+
+  // The Today tile tracks time earned today; the streak tile tracks qualified days.
+  const requiredSeconds = Math.max(1, Number(goal.requiredSeconds) || 1);
+  const secondsToday = Math.min(requiredSeconds, Math.max(0, Number(goal.secondsToday) || 0));
+  const dayPercent = Math.floor((secondsToday / requiredSeconds) * 100);
+  paintRect(image, 780, 480, 270, 58, [21, 18, 30]);
+  drawText(image, `${dayPercent}%`, 810, 488, 7, [255, 222, 147]);
+  paintRect(image, 780, 600, 270, 45, [21, 18, 30]);
+  const earnedMinutes = Math.floor(secondsToday / 60);
+  const requiredMinutes = Math.ceil(requiredSeconds / 60);
+  const dailyLabel = `${earnedMinutes} / ${requiredMinutes}M`;
+  drawText(image, dailyLabel, 800, 606, Math.min(5, Math.floor(260 / (dailyLabel.length * 6))), [238, 223, 188]);
+  const dayCells = Math.min(15, Math.floor((secondsToday / requiredSeconds) * 15));
+  for (let index = 0; index < dayCells; index++) {
+    paintRect(image, 696 + index * 23.4, 552, 18, 27, index === 14 ? [255, 222, 147] : [198, 137, 51], 0.95);
+  }
+
+  const weekDays = Math.min(7, Math.max(0, Number(goal.streak) || 0));
+  for (let index = 0; index < weekDays; index++) {
+    paintRect(image, 1140 + index * 49, 552, 41, 27, index === 6 ? [255, 222, 147] : [198, 137, 51], 0.95);
+  }
+  paintRect(image, 1218, 600, 270, 45, [28, 19, 26]);
+  drawText(image, `${weekDays} / 7 DAYS`, 1230, 606, 4, [255, 222, 147]);
   return encodeRgbPng(image);
 }
 

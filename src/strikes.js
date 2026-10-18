@@ -327,7 +327,7 @@ async function refreshActiveGoalProgress(force=false){
     const filename='kind-smp-weekly-player-goal.png';
     const existingImage=current?.embeds?.find(e=>e.title==='🏆 KIND SMP - Weekly Player Goal')?.image?.url;
     const hasAttachment=current?.attachments?.some(attachment=>attachment.name===filename);
-    const countSignature=`${CARD_VERSION}|${g.targetPlayers}|${g.sampleFresh?g.onlinePlayers:'waiting'}`;
+    const countSignature=`${CARD_VERSION}|${g.targetPlayers}|${g.requiredSeconds}|${g.sampleFresh?g.onlinePlayers:'waiting'}|${g.secondsToday}|${g.streak}`;
     const previous=db.prepare("SELECT value FROM app_state WHERE key='active_goal_card_state'").get()?.value;
     const attachCard=!current||!existingImage||!hasAttachment||previous!==countSignature;
     const panel=activeGoalProgressEmbed(g,{attachCard,imageUrl:attachCard?null:existingImage});

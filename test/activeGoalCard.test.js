@@ -48,3 +48,19 @@ test('changes only the Players Online panel when the live count changes', () => 
     assert.deepEqual(fiveOnline.pixels.subarray(rowStart + panelEnd, rowStart + fiveOnline.width * 3), sixOnline.pixels.subarray(rowStart + panelEnd, rowStart + fiveOnline.width * 3));
   }
 });
+
+test('shows daily timer and weekly streak progress only in their progress panels', () => {
+  const early = decodeRgbPng(createActiveGoalCard({ ...sampleGoal, onlinePlayers: 6, sampleFresh: true }));
+  const progressed = decodeRgbPng(createActiveGoalCard({ ...sampleGoal, onlinePlayers: 6, sampleFresh: true, secondsToday: 3600, streak: 3 }));
+  let changed = 0;
+  for (let y = 0; y < early.height; y++) for (let x = 0; x < early.width; x++) {
+    const offset = (y * early.width + x) * 3;
+    const differs = early.pixels[offset] !== progressed.pixels[offset]
+      || early.pixels[offset + 1] !== progressed.pixels[offset + 1]
+      || early.pixels[offset + 2] !== progressed.pixels[offset + 2];
+    if (!differs) continue;
+    changed++;
+    assert.ok(y >= 416 && y < 666 && x >= 654 && x < 1535, `unexpected change at ${x},${y}`);
+  }
+  assert.ok(changed > 0, 'expected the daily and weekly progress indicators to change');
+});

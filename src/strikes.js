@@ -299,15 +299,14 @@ function activeGoalProgressEmbed(){
   const streakProgress=`${progressBar(g.streak,7,7)}\n**${g.streak} / 7 days**`;
 
   return new EmbedBuilder().setColor(0x35c5b5)
-    .setTitle('🏆 KIND SMP ACTIVE PLAYER GOAL')
-    .setDescription(`**${g.targetPlayers} players online · ${formatDuration(g.requiredSeconds)} daily countdown · 7-day streak**\nPlayer goal tracking is active **24/7**. The countdown starts only after the player target is reached and pauses if the count drops below it.`)
+    .setTitle('🏆 KIND SMP - Weekly Player Goal')
+    .setDescription(`Get everyone online and help the server reach its community goal!\n\nKeep at least **${g.targetPlayers} players on the tab list at the same time for ${formatDuration(g.requiredSeconds)} each day.** The timer advances only while the tab-list count meets the target. Meet it on **7 days in a row** to complete the challenge.\n\nGoal tracking is active **24/7**.`)
     .addFields(
-      {name:'👤 PLAYERS RIGHT NOW',value:liveCount,inline:false},
-      {name:'⏱️ COUNTDOWN',value:todayProgress,inline:false},
-      {name:'🔥 WEEKLY STREAK',value:streakProgress,inline:false},
+      {name:'👥 Players on tab list now',value:g.sampleFresh?`**${g.onlinePlayers} / ${g.targetPlayers} players**`:'⏳ Waiting for Minecraft server data',inline:true},
+      {name:'🔥 Weekly streak',value:streakProgress,inline:true},
+      {name:'⏱️ Time with enough players',value:`${progressBar(g.secondsToday,g.requiredSeconds,10)}\n**${formatDuration(g.secondsToday)} / ${formatDuration(g.requiredSeconds)}** with enough players online${g.dayQualified?' · ✅ Complete':enoughPlayers?' · 🟢 Counting':' · ⏸️ Paused'}`,inline:false},
       {name:'🎁 PRIZE',value:g.prize?`✨ **${g.prize}**`:'The owner has not chosen a prize yet.',inline:false}
     )
-    .setThumbnail('https://mc-heads.net/avatar/Steve/128')
     .setFooter({text:`A missed day resets the streak · Timezone: ${g.timezone}`});
 }
 async function upsertGoalMessage(channelId,key,embed,components=[]){

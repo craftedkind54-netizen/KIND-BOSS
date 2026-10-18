@@ -8,7 +8,7 @@ const { punishmentFor, projectedTotal } = require('./strikePolicy');
 const { reversibleStrikeAmount } = require('./strikeAppealPolicy');
 const { createStaffCommandEmbed } = require('./staffAudit');
 const { createActivePlayerGoal } = require('./activePlayerGoal');
-const { createActiveGoalCard } = require('./activeGoalCard');
+const { createActiveGoalCard, CARD_VERSION } = require('./activeGoalCard');
 const {
   Client, GatewayIntentBits, Events, EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
@@ -277,19 +277,18 @@ function activeGoalSettingsEmbed(){
     .addFields({name:'Current goal',value:`${g.targetPlayers} players · ${Math.round(g.requiredSeconds/60)} minutes per day`,inline:true},{name:'Current prize',value:g.prize||'No prize set',inline:true},{name:'Timezone',value:g.timezone,inline:true});
 }
 function activeGoalSettingsRows(){return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('activegoal:set').setLabel('Set Active Goal').setStyle(ButtonStyle.Primary))];}
-function activeGoalProgressEmbed(){
-  const g=activePlayerGoal.snapshot();
+function activeGoalProgressEmbed(g=activePlayerGoal.snapshot(),{attachCard=true,imageUrl=null}={}){
   const filename='kind-smp-weekly-player-goal.png';
-  const file=new AttachmentBuilder(createActiveGoalCard(g),{name:filename});
+  const file=attachCard?new AttachmentBuilder(createActiveGoalCard(g),{name:filename}):null;
   const duration=formatGoalDuration(g.requiredSeconds);
   const averageCoverage=g.averageCoverageSeconds<60?`${Math.round(g.averageCoverageSeconds)}s`:formatGoalDuration(g.averageCoverageSeconds);
   const weeklyAverage=g.averageOnlinePlayers==null?'collecting samples':`${g.averageOnlinePlayers.toFixed(1)} players · ${averageCoverage} tracked`;
   const embed=new EmbedBuilder().setColor(0x35c5b5)
     .setTitle('🏆 KIND SMP - Weekly Player Goal')
     .setDescription(`**${g.targetPlayers} players** for **${duration} each day**, for **7 days in a row** · tracked **24/7**\nToday ${formatGoalDuration(g.secondsToday)} / ${formatGoalDuration(g.requiredSeconds)} · Streak ${g.streak} / 7 days · Prize: ${g.prize||'not set'}\nPast 7-day average: **${weeklyAverage}**`)
-    .setImage(`attachment://${filename}`)
+    .setImage(imageUrl||`attachment://${filename}`)
     .setFooter({text:`Timer only counts while the target is met · ${g.timezone}`});
-  return {embed,files:[file]};
+  return {embed,files:file?[file]:[]};
 }
 async function upsertGoalMessage(channelId,key,embed,components=[],files=[]){
   const channel=await client.channels.fetch(channelId).catch(()=>null);
@@ -317,7 +316,25 @@ async function refreshActiveGoalProgress(force=false){
   if(!client?.isReady())return;
   const now=Date.now(); if(!force&&now-lastGoalPanelEdit<60000)return;
   lastGoalPanelEdit=now;
-  try{const panel=activeGoalProgressEmbed();await upsertGoalMessage(ACTIVE_GOAL_PROGRESS_CHANNEL_ID,'active_goal_progress_message_id',panel.embed,[],panel.files);}
+  try{
+    const g=activePlayerGoal.snapshot();
+    const channel=await client.channels.fetch(ACTIVE_GOAL_PROGRESS_CHANNEL_ID).catch(()=>null);
+    if(!channel?.isTextBased())throw new Error(`Active goal channel ${ACTIVE_GOAL_PROGRESS_CHANNEL_ID} is unavailable`);
+    const recent=await channel.messages.fetch({limit:100}).catch(()=>null);
+    const matches=recent?[...recent.values()].filter(m=>m.author?.id===client.user.id&&m.embeds?.some(e=>e.title==='🏆 KIND SMP - Weekly Player Goal')):[];
+    matches.sort((a,b)=>b.createdTimestamp-a.createdTimestamp);
+    const current=matches[0]||null;
+    const filename='kind-smp-weekly-player-goal.png';
+    const existingImage=current?.embeds?.find(e=>e.title==='🏆 KIND SMP - Weekly Player Goal')?.image?.url;
+    const hasAttachment=current?.attachments?.some(attachment=>attachment.name===filename);
+    const countSignature=`${CARD_VERSION}|${g.targetPlayers}|${g.sampleFresh?g.onlinePlayers:'waiting'}`;
+    const previous=db.prepare("SELECT value FROM app_state WHERE key='active_goal_card_state'").get()?.value;
+    const attachCard=!current||!existingImage||!hasAttachment||previous!==countSignature;
+    const panel=activeGoalProgressEmbed(g,{attachCard,imageUrl:attachCard?null:existingImage});
+    await upsertGoalMessage(ACTIVE_GOAL_PROGRESS_CHANNEL_ID,'active_goal_progress_message_id',panel.embed,[],panel.files);
+    if(attachCard)db.prepare(`INSERT INTO app_state(key,value) VALUES('active_goal_card_state',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(countSignature);
+  }
   catch(error){console.error('Active player goal progress update failed:',error.message);}
 }
 async function announceActiveGoalCompletion(progress){

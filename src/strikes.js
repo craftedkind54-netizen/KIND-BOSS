@@ -288,38 +288,40 @@ function activeGoalProgressEmbed(){
     const filled=Math.max(0,Math.min(segments,Math.floor((value/Math.max(1,max))*segments)));
     return `\`${'■'.repeat(filled)}${'□'.repeat(segments-filled)}\``;
   };
-  const liveCount=g.sampleFresh
-    ? `**${g.onlinePlayers} / ${g.targetPlayers}**\n${progressBar(g.onlinePlayers,g.targetPlayers,8)}`
-    : `⏳ Waiting for Minecraft server data\n**Target: ${g.targetPlayers} players**`;
   const enoughPlayers=g.sampleFresh&&g.onlinePlayers>=g.targetPlayers;
-  const remainingSeconds=Math.max(0,g.requiredSeconds-g.secondsToday);
-  const todayProgress=g.dayQualified
-    ? `✅ **Daily countdown complete**\n${progressBar(g.requiredSeconds,g.requiredSeconds,8)}\n**${formatDuration(g.requiredSeconds)} reached**`
-    : `${enoughPlayers?'🟢 **Countdown active**':'⏸️ **Paused**'}\n${progressBar(g.secondsToday,g.requiredSeconds,8)}\n**${formatDuration(remainingSeconds)} remaining**${enoughPlayers?'':`\nNeed **${g.targetPlayers} players online** to start`}`;
-  const streakProgress=`${progressBar(g.streak,7,7)}\n**${g.streak} / 7 days**`;
+  const liveCount=g.sampleFresh
+    ? `**${g.onlinePlayers} / ${g.targetPlayers}**\n${progressBar(g.onlinePlayers,g.targetPlayers,10)}`
+    : `⏳ Waiting for server data\n${progressBar(0,g.targetPlayers,10)}`;
+  const todayProgress=`**${formatDuration(g.secondsToday)} / ${formatDuration(g.requiredSeconds)}**\n${progressBar(g.secondsToday,g.requiredSeconds,10)}\n${g.dayQualified?'✅ Goal met today':enoughPlayers?'🟢 Countdown active':'⏸️ Paused · need '+g.targetPlayers+' players'}`;
+  const streakProgress=`**${g.streak} / 7 days**\n${progressBar(g.streak,7,7)}`;
 
-  return new EmbedBuilder().setColor(0x35c5b5)
+  const progressEmbed=new EmbedBuilder().setColor(0x35c5b5)
     .setTitle('🏆 KIND SMP - Weekly Player Goal')
-    .setDescription(`Get everyone online and help the server reach its community goal!\n\nKeep at least **${g.targetPlayers} players on the tab list at the same time for ${formatDuration(g.requiredSeconds)} each day.** The timer advances only while the tab-list count meets the target. Meet it on **7 days in a row** to complete the challenge.\n\nGoal tracking is active **24/7**.`)
+    .setDescription(`Get everyone online and help the server reach its community goal!\n\n🟦 **${g.targetPlayers} players** on the tab list for **${formatDuration(g.requiredSeconds)} each day** · **7 days in a row**`)
     .addFields(
-      {name:'👥 Players on tab list now',value:g.sampleFresh?`**${g.onlinePlayers} / ${g.targetPlayers} players**`:'⏳ Waiting for Minecraft server data',inline:true},
-      {name:'🔥 Weekly streak',value:streakProgress,inline:true},
-      {name:'⏱️ Time with enough players',value:`${progressBar(g.secondsToday,g.requiredSeconds,10)}\n**${formatDuration(g.secondsToday)} / ${formatDuration(g.requiredSeconds)}** with enough players online${g.dayQualified?' · ✅ Complete':enoughPlayers?' · 🟢 Counting':' · ⏸️ Paused'}`,inline:false},
-      {name:'🎁 PRIZE',value:g.prize?`✨ **${g.prize}**`:'The owner has not chosen a prize yet.',inline:false}
+      {name:'👥 PLAYERS ONLINE',value:liveCount,inline:true},
+      {name:'⏱️ TODAY',value:todayProgress,inline:true},
+      {name:'🔥 WEEKLY STREAK',value:streakProgress,inline:true}
     )
-    .setFooter({text:`A missed day resets the streak · Timezone: ${g.timezone}`});
+    .setFooter({text:`Timer runs only while the player target is met · ${g.timezone}`});
+  const prizeEmbed=new EmbedBuilder().setColor(0xf2c14e)
+    .setTitle('🎁 PRIZE')
+    .setDescription(g.prize?`✨ **${g.prize}**`:'The owner has not chosen a prize yet.')
+    .setFooter({text:'Prize fulfillment is arranged by staff'});
+  return [progressEmbed,prizeEmbed];
 }
 async function upsertGoalMessage(channelId,key,embed,components=[]){
   const channel=await client.channels.fetch(channelId).catch(()=>null);
   if(!channel?.isTextBased())throw new Error(`Active goal channel ${channelId} is unavailable`);
-  const title=embed.data.title;
+  const embeds=Array.isArray(embed)?embed:[embed];
+  const title=embeds[0]?.data.title;
   const recent=await channel.messages.fetch({limit:100}).catch(()=>null);
   const matches=recent?[...recent.values()].filter(m=>m.author?.id===client.user.id&&m.embeds?.some(e=>e.title===title)):[];
   matches.sort((a,b)=>b.createdTimestamp-a.createdTimestamp);
   let message=matches[0]||null;
   for(const duplicate of matches.slice(1))await duplicate.delete().catch(()=>{});
-  if(message)await message.edit({embeds:[embed],components});
-  else message=await channel.send({embeds:[embed],components});
+  if(message)await message.edit({embeds,components});
+  else message=await channel.send({embeds,components});
   db.prepare('INSERT INTO app_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,message.id);
   return message;
 }

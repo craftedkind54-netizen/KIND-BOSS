@@ -27,6 +27,7 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
     private HttpClient http;
     private String baseUrl, secret;
     private boolean strikePollBusy;
+    private boolean staffRankPollBusy;
     private final PlainTextComponentSerializer plain = PlainTextComponentSerializer.plainText();
 
     @Override public void onEnable() {
@@ -38,6 +39,7 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         if (getCommand("strike") != null) getCommand("strike").setExecutor(this);
         for (Player p : Bukkit.getOnlinePlayers()) syncPlayer(p);
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::pollApprovedStrikeActions, 60L, 100L);
+        Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::pollApprovedStaffRankActions, 80L, 100L);
         postEvent("server_online", null, null);
         getLogger().info("KIND BOSS bridge + activity feed enabled for Paper 1.21.11.");
     }
@@ -137,6 +139,69 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
             } catch (Exception e) {
                 getLogger().warning("Could not read approved strike actions: " + e.getMessage());
                 strikePollBusy = false;
+            }
+        });
+    }
+
+    private void pollApprovedStaffRankActions() {
+        if (staffRankPollBusy || !configured(null)) return;
+        staffRankPollBusy = true;
+        HttpRequest req = HttpRequest.newBuilder(URI.create(baseUrl + "/api/v1/staff/ranks/actions?limit=25"))
+                .timeout(Duration.ofSeconds(15)).header("Authorization", "Bearer " + secret).GET().build();
+        http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> {
+            if (err != null || res.statusCode() < 200 || res.statusCode() >= 300) {
+                if (err != null) getLogger().fine("Staff rank poll failed: " + err.getMessage());
+                staffRankPollBusy = false;
+                return;
+            }
+            try {
+                List<String> actions = jsonObjects(res.body(), "actions");
+                if (actions.isEmpty()) { staffRankPollBusy = false; return; }
+                Bukkit.getScheduler().runTask(this, () -> processStaffRankActions(actions));
+            } catch (Exception e) {
+                getLogger().warning("Could not read approved staff rank actions: " + e.getMessage());
+                staffRankPollBusy = false;
+            }
+        });
+    }
+
+    private void processStaffRankActions(List<String> actions) {
+        for (String action : actions) {
+            long id = jsonNumber(action, "id", -1L);
+            long applicationId = jsonNumber(action, "applicationId", -1L);
+            String username = jsonString(action, "username");
+            String targetRank = jsonString(action, "targetRank");
+            String minecraftRank = jsonString(action, "minecraftRank");
+            String expectedRank = switch (targetRank == null ? "" : targetRank) {
+                case "general" -> "general_staff";
+                case "head_general" -> "head_staff_2nd";
+                case "senior" -> "senior_staff";
+                case "head_senior" -> "head_staff";
+                case "co_owner" -> "co_owner";
+                case "owner" -> "owner";
+                default -> null;
+            };
+            boolean success = id > 0 && applicationId > 0 && username != null && username.matches("[A-Za-z0-9_]{1,16}")
+                    && expectedRank != null && expectedRank.equals(minecraftRank);
+            String error = success ? "" : "Invalid rank action payload";
+            if (success) {
+                String command = "rank set " + username + " " + minecraftRank;
+                success = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
+                if (!success) error = "CraftedCore did not accept /rank set";
+                else getLogger().info("Submitted approved staff rank " + minecraftRank + " for " + username + " (application #" + applicationId + ").");
+            }
+            acknowledgeStaffRankAction(id, success, error);
+        }
+        staffRankPollBusy = false;
+    }
+
+    private void acknowledgeStaffRankAction(long id, boolean success, String error) {
+        if (id < 1) return;
+        String body = "{\"id\":" + id + ",\"success\":" + success + ",\"error\":\"" + esc(error) + "\"}";
+        HttpRequest req = request("/api/v1/staff/ranks/actions/ack", body);
+        http.sendAsync(req, HttpResponse.BodyHandlers.discarding()).whenComplete((res, err) -> {
+            if (err != null || res.statusCode() < 200 || res.statusCode() >= 300) {
+                getLogger().warning("Could not acknowledge staff rank action #" + id + "; it will be retried.");
             }
         });
     }

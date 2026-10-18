@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS pending_strike_proposals (
  created_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', message_id TEXT,
  decided_at TEXT, decided_by TEXT, result_json TEXT
 );
+CREATE TABLE IF NOT EXISTS minecraft_staff_rank_actions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, app_id INTEGER NOT NULL UNIQUE,
+ discord_user_id TEXT NOT NULL, minecraft_uuid TEXT NOT NULL, minecraft_username TEXT NOT NULL,
+ target_rank TEXT NOT NULL, minecraft_rank TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued',
+ last_error TEXT, created_at TEXT NOT NULL, completed_at TEXT
+);
 `);
 if (!strikeApprovalChannelId) strikeApprovalChannelId = db.prepare(`SELECT value FROM app_state WHERE key='strike_approval_channel_id'`).get()?.value || '';
 
@@ -180,6 +186,37 @@ app.get('/api/v1/strikes/actions',(req,res)=>{
     .map(action=>({...action,discordUserId:discordUserIdForPlayer(action.playerUuid),punishment:action.action==='add'?punishmentFor(action.newTotal):null}));
   const latestActionId=db.prepare(`SELECT COALESCE(MAX(id),0) AS id FROM strike_actions`).get().id;
   res.json({actions,nextCursor:actions.length?actions.at(-1).id:after,latestActionId,hasMore:actions.length===requestedLimit});
+});
+
+const insertStaffRankAction = db.prepare(`INSERT OR IGNORE INTO minecraft_staff_rank_actions
+ (app_id,discord_user_id,minecraft_uuid,minecraft_username,target_rank,minecraft_rank,status,created_at)
+ VALUES(?,?,?,?,?,?, 'queued', ?)`);
+global.__KIND_BOSS_QUEUE_STAFF_RANK = input => {
+  if (!Number.isSafeInteger(input.appId) || input.appId < 1) throw new Error('Invalid staff application ID');
+  if (!/^\d{17,20}$/.test(String(input.discordUserId || ''))) throw new Error('Invalid Discord user ID');
+  if (!/^[0-9a-f-]{36}$/i.test(String(input.minecraftUuid || ''))) throw new Error('Invalid linked Minecraft UUID');
+  if (!/^[A-Za-z0-9_]{1,16}$/.test(String(input.minecraftUsername || ''))) throw new Error('Invalid linked Minecraft username');
+  if (!/^[a-z_]{1,32}$/.test(String(input.targetRank || '')) || !/^[a-z_]{1,32}$/.test(String(input.minecraftRank || ''))) throw new Error('Invalid staff rank mapping');
+  insertStaffRankAction.run(input.appId,input.discordUserId,input.minecraftUuid,input.minecraftUsername,input.targetRank,input.minecraftRank,new Date().toISOString());
+  return db.prepare('SELECT id,status FROM minecraft_staff_rank_actions WHERE app_id=?').get(input.appId);
+};
+app.get('/api/v1/staff/ranks/actions',(req,res)=>{
+  const limit=Number(req.query.limit||25);
+  if(!Number.isSafeInteger(limit)||limit<1||limit>100)return res.status(400).json({error:'limit must be a whole number from 1 to 100'});
+  const actions=db.prepare(`SELECT id,app_id AS applicationId,discord_user_id AS discordUserId,minecraft_uuid AS minecraftUuid,
+    minecraft_username AS username,target_rank AS targetRank,minecraft_rank AS minecraftRank
+    FROM minecraft_staff_rank_actions WHERE status='queued' ORDER BY id ASC LIMIT ?`).all(limit);
+  res.json({actions});
+});
+app.post('/api/v1/staff/ranks/actions/ack',(req,res)=>{
+  const id=Number(req.body?.id),success=req.body?.success;
+  if(!Number.isSafeInteger(id)||id<1||typeof success!=='boolean')return res.status(400).json({error:'id and success are required'});
+  const error=String(req.body?.error||'').slice(0,300);
+  const changed=success
+    ? db.prepare(`UPDATE minecraft_staff_rank_actions SET status='completed',last_error=NULL,completed_at=? WHERE id=? AND status='queued'`).run(new Date().toISOString(),id).changes
+    : db.prepare(`UPDATE minecraft_staff_rank_actions SET last_error=? WHERE id=? AND status='queued'`).run(error,id).changes;
+  if(!changed)return res.status(404).json({error:'Queued staff rank action not found'});
+  res.json({ok:true});
 });
 
 // Minecraft activity feed. Normal Minecraft chat is intentionally NOT accepted or posted.

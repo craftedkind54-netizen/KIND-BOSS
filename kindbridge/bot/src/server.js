@@ -1,16 +1,18 @@
 import { createServer } from 'node:http';
 import { request as httpRequest } from 'node:http';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { feedEntries } from './youtube.js';
 export function equalSecret(a, b) {
   const x = Buffer.from(a || ''), y = Buffer.from(b || '');
   return x.length === y.length && timingSafeEqual(x, y);
 }
-async function readBody(req) {
+async function readBody(req, limit = 262144) {
   const chunks = []; let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 262144) { const e = new Error('Body too large'); e.status = 413; throw e; }
+    if (size > limit) { const e = new Error('Body too large'); e.status = 413; throw e; }
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
@@ -21,6 +23,20 @@ export function server(store, c, youtube, ready = () => true) {
     try {
       const u = new URL(req.url, 'http://localhost');
       if (u.pathname === '/health' && req.method === 'GET') return reply(ready() ? 200 : 503, { ready: ready() });
+      if (u.pathname === '/admin/migrate-kindbridge-db' && req.method === 'POST') {
+        const token = process.env.KIND_BRIDGE_MIGRATION_TOKEN || '';
+        if (!token || !equalSecret(req.headers.authorization, `Bearer ${token}`)) return reply(401, { error: 'Unauthorized' });
+        if (store.get('kindBridgeDbImportedV1', false)) return reply(409, { error: 'Kind Bridge database was already imported' });
+        const body = await readBody(req, 10 * 1024 * 1024);
+        if (!body.subarray(0, 16).equals(Buffer.from('SQLite format 3\0'))) return reply(400, { error: 'Expected a SQLite database snapshot' });
+        const file = join(c.dataDir, `.kindbridge-import-${randomUUID()}.db`);
+        try {
+          writeFileSync(file, body, { flag: 'wx', mode: 0o600 });
+          const rows = store.importFrom(file);
+          process.env.KIND_BRIDGE_MIGRATION_TOKEN = '';
+          return reply(200, { ok: true, imported: true, rows });
+        } finally { try { unlinkSync(file); } catch {} }
+      }
       if (u.pathname.startsWith('/api/v1/')) {
         const upstream = httpRequest({ hostname: '127.0.0.1', port: c.strikesApiPort, path: req.url, method: req.method, headers: req.headers }, response => {
           res.writeHead(response.statusCode || 502, response.headers);

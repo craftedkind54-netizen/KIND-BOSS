@@ -90,6 +90,31 @@ export class Store {
       return true;
     });
   }
+  importFrom(sourcePath) {
+    if (this.get('kindBridgeDbImportedV1', false)) throw new Error('The Kind Bridge database has already been imported');
+    const targetTables = new Set(this.db.prepare("SELECT name FROM main.sqlite_master WHERE type='table'").all().map(r => r.name));
+    this.db.prepare('ATTACH DATABASE ? AS kindbridge_import').run(sourcePath);
+    const imported = {};
+    try {
+      this.transaction(() => {
+        for (const table of ['applications','jobs','kv','drafts','verifications','creators','videos','posts','quota']) {
+          const sourceExists = this.db.prepare("SELECT 1 FROM kindbridge_import.sqlite_master WHERE type='table' AND name=?").get(table);
+          if (!sourceExists || !targetTables.has(table)) continue;
+          const targetColumns = this.db.prepare(`PRAGMA main.table_info("${table}")`).all().map(r => r.name);
+          const sourceColumns = new Set(this.db.prepare(`PRAGMA kindbridge_import.table_info("${table}")`).all().map(r => r.name));
+          const columns = targetColumns.filter(name => sourceColumns.has(name));
+          if (!columns.length) continue;
+          const names = columns.map(name => `"${name}"`).join(',');
+          const result = this.db.prepare(`INSERT OR IGNORE INTO main."${table}" (${names}) SELECT ${names} FROM kindbridge_import."${table}"`).run();
+          imported[table] = result.changes;
+        }
+        this.set('kindBridgeDbImportedV1', { importedAt: Date.now(), rows: imported });
+      });
+      return imported;
+    } finally {
+      this.db.exec('DETACH DATABASE kindbridge_import');
+    }
+  }
   post(key, channel, body) {
     if (channel) this.run('INSERT OR IGNORE INTO posts(key,channel,body) VALUES (?,?,?)', key, channel, JSON.stringify(body));
   }

@@ -42,6 +42,7 @@ const MINECRAFT_FEED_CHANNEL_ID = process.env.MINECRAFT_FEED_CHANNEL_ID || '1555
 const STAFF_AUDIT_CHANNEL_ID = process.env.STAFF_AUDIT_CHANNEL_ID || '1561291135819714630';
 const ACTIVE_GOAL_PROGRESS_CHANNEL_ID = process.env.ACTIVE_GOAL_PROGRESS_CHANNEL_ID || '1561320960135659520';
 const ACTIVE_GOAL_MANAGEMENT_CHANNEL_ID = process.env.ACTIVE_GOAL_MANAGEMENT_CHANNEL_ID || '1561323169862783086';
+const ACTIVE_GOAL_ANNOUNCEMENTS_CHANNEL_ID = process.env.ACTIVE_GOAL_ANNOUNCEMENTS_CHANNEL_ID || process.env.ANNOUNCEMENTS_CHANNEL_ID || '1555825214045163520';
 const STAFF_ROLE_IDS = [process.env.OWNER_ROLE_ID || '1555827222688829441', process.env.SENIOR_STAFF_ROLE_ID || '1555839917815238736', process.env.GENERAL_STAFF_ROLE_ID || '1555840026607362099'];
 const BEDROCK_PREFIX = '.';
 
@@ -92,6 +93,11 @@ CREATE TABLE IF NOT EXISTS minecraft_staff_rank_actions (
 `);
 if (!strikeApprovalChannelId) strikeApprovalChannelId = db.prepare(`SELECT value FROM app_state WHERE key='strike_approval_channel_id'`).get()?.value || '';
 const activePlayerGoal = createActivePlayerGoal(db, { timezone: process.env.ACTIVE_GOAL_TIMEZONE || 'Pacific/Honolulu' });
+db.exec(`CREATE TABLE IF NOT EXISTS active_goal_completion_announcements (
+  local_day TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL,
+  announced_at TEXT NOT NULL
+);`);
 
 const normalizeName = n => n.trim().toLowerCase();
 const validAmount = n => Number.isSafeInteger(n) && n > 0 && n <= 1000000;
@@ -330,6 +336,28 @@ async function refreshActiveGoalProgress(force=false){
   try{await upsertGoalMessage(ACTIVE_GOAL_PROGRESS_CHANNEL_ID,'active_goal_progress_message_id',activeGoalProgressEmbed());}
   catch(error){console.error('Active player goal progress update failed:',error.message);}
 }
+async function announceActiveGoalCompletion(progress){
+  if(!progress.dayQualified||progress.streak<7||progress.streak%7!==0)return;
+  if(db.prepare('SELECT 1 FROM active_goal_completion_announcements WHERE local_day=?').get(progress.day))return;
+  try{
+    const channel=await client.channels.fetch(ACTIVE_GOAL_ANNOUNCEMENTS_CHANNEL_ID).catch(()=>null);
+    if(!channel?.isTextBased())throw new Error(`Announcements channel ${ACTIVE_GOAL_ANNOUNCEMENTS_CHANNEL_ID} is unavailable`);
+    const completedWeeks=Math.floor(progress.streak/7);
+    const embed=new EmbedBuilder().setColor(0xf2c14e)
+      .setTitle('🎉 KIND SMP Weekly Player Goal Completed!')
+      .setDescription(`The community reached **${progress.targetPlayers} players online for ${formatGoalDuration(progress.requiredSeconds)} per day** for **${progress.streak} consecutive days**!${completedWeeks>1?` That completes **${completedWeeks} weekly streaks**.`:''}\n\n🎁 **Prize:** ${progress.prize||'The owner has not chosen a prize yet.'}`)
+      .setFooter({text:`Completed ${progress.day} · ${progress.timezone} · Prize fulfillment is arranged by staff`});
+    const message=await channel.send({embeds:[embed],allowedMentions:{parse:[]}});
+    db.prepare('INSERT OR IGNORE INTO active_goal_completion_announcements(local_day,message_id,announced_at) VALUES(?,?,?)')
+      .run(progress.day,message.id,new Date().toISOString());
+  }catch(error){console.error('Active player goal completion announcement failed:',error.message);}
+}
+function formatGoalDuration(seconds){
+  const totalMinutes=Math.floor(seconds/60);
+  const hours=Math.floor(totalMinutes/60);
+  const minutes=totalMinutes%60;
+  return hours?`${hours}h ${minutes}m`:`${minutes}m`;
+}
 function activeGoalModal(){
   const g=activePlayerGoal.snapshot();
   const modal=new ModalBuilder().setCustomId('activegoal:configure').setTitle('Configure Active Goal');
@@ -345,6 +373,7 @@ app.post('/api/v1/active-goal/sample',async(req,res)=>{
   try{
     const online=Number(req.body?.onlinePlayers);
     const progress=activePlayerGoal.recordSample(online);
+    await announceActiveGoalCompletion(progress);
     await refreshActiveGoalProgress();
     res.json({ok:true,progress:{day:progress.day,secondsToday:progress.secondsToday,streak:progress.streak,dayQualified:progress.dayQualified}});
   }catch(error){res.status(400).json({error:error.message});}

@@ -290,24 +290,24 @@ function activeGoalProgressEmbed(){
   };
   const enoughPlayers=g.sampleFresh&&g.onlinePlayers>=g.targetPlayers;
   const liveCount=g.sampleFresh
-    ? `**${g.onlinePlayers} / ${g.targetPlayers}**\n${progressBar(g.onlinePlayers,g.targetPlayers,10)}`
-    : `⏳ Waiting for server data\n${progressBar(0,g.targetPlayers,10)}`;
-  const todayProgress=`**${formatDuration(g.secondsToday)} / ${formatDuration(g.requiredSeconds)}**\n${progressBar(g.secondsToday,g.requiredSeconds,10)}\n${g.dayQualified?'✅ Goal met today':enoughPlayers?'🟢 Countdown active':'⏸️ Paused · need '+g.targetPlayers+' players'}`;
+    ? `**${g.onlinePlayers} / ${g.targetPlayers}**\n${progressBar(g.onlinePlayers,g.targetPlayers,8)}`
+    : `⏳ No server data\n${progressBar(0,g.targetPlayers,8)}`;
+  const todayProgress=`**${formatDuration(g.secondsToday)} / ${formatDuration(g.requiredSeconds)}**\n${progressBar(g.secondsToday,g.requiredSeconds,8)}\n${g.dayQualified?'✅ Complete':enoughPlayers?'🟢 Counting':'⏸️ Paused'}`;
   const streakProgress=`**${g.streak} / 7 days**\n${progressBar(g.streak,7,7)}`;
 
   const progressEmbed=new EmbedBuilder().setColor(0x35c5b5)
     .setTitle('🏆 KIND SMP - Weekly Player Goal')
-    .setDescription(`Get everyone online and help the server reach its community goal!\n\n🟦 **${g.targetPlayers} players** on the tab list for **${formatDuration(g.requiredSeconds)} each day** · **7 days in a row**`)
+    .setDescription(`Get everyone online and help the server reach its community goal!\n\n🟦 **${g.targetPlayers} players** · **${formatDuration(g.requiredSeconds)} daily** · **7 days in a row** · tracked **24/7**`)
     .addFields(
-      {name:'👥 PLAYERS ONLINE',value:liveCount,inline:true},
+      {name:'👥 PLAYERS',value:liveCount,inline:true},
       {name:'⏱️ TODAY',value:todayProgress,inline:true},
       {name:'🔥 WEEKLY STREAK',value:streakProgress,inline:true}
     )
     .setFooter({text:`Timer runs only while the player target is met · ${g.timezone}`});
   const prizeEmbed=new EmbedBuilder().setColor(0xf2c14e)
     .setTitle('🎁 PRIZE')
-    .setDescription(g.prize?`✨ **${g.prize}**`:'The owner has not chosen a prize yet.')
-    .setFooter({text:'Prize fulfillment is arranged by staff'});
+    .setDescription(g.prize?`✨ **${g.prize}**\n\nReach the 7-day streak to complete the community goal.`:'The owner has not chosen a prize yet.')
+    .setFooter({text:'The owner sets the reward · Staff arrange fulfillment'});
   return [progressEmbed,prizeEmbed];
 }
 async function upsertGoalMessage(channelId,key,embed,components=[]){

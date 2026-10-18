@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { DateTime } = require('luxon');
 const { minecraftRankForTarget } = require('./staffMinecraftRanks');
+const { resolveStaffRole } = require('./staffRoleResolver');
 const client = global.__KIND_BOSS_CLIENT;
 
 const GUILD_ID=process.env.GUILD_ID||'1555704317552361563';
@@ -240,14 +241,13 @@ async function deleteApplicantChannelAfterApproval(id,g){const a=appById(id);if(
 async function finalize(id,g){
  const a=appById(id),r=rank(a?.target_rank),minecraftRank=minecraftRankForTarget(a?.target_rank);
  if(!a||!r||!minecraftRank)throw new Error('The application target does not have a configured Discord and Minecraft rank.');
- if(!r.role)throw new Error(`The Discord role for ${r.label} is not configured.`);
  const account=minecraftAccountForDiscordUser(a.user_id);
  if(!account?.username||!account?.uuid)throw new Error('No verified, whitelisted Minecraft account is linked to this Discord applicant. Link and whitelist their SMP account before final approval.');
  if(!/^[A-Za-z0-9_]{1,16}$/.test(account.username)||!/^[0-9a-f-]{36}$/i.test(account.uuid))throw new Error('The linked Minecraft account record is invalid.');
  const member=await g.members.fetch(a.user_id).catch(()=>null);
  if(!member)throw new Error('The applicant is no longer a member of the Discord server.');
- const role=await g.roles.fetch(r.role).catch(()=>null);
- if(!role)throw new Error(`The configured Discord role for ${r.label} could not be found.`);
+ const role=await resolveStaffRole(g,a.target_rank,r.role);
+ if(!role)throw new Error(`The Discord role for ${r.label} is not configured or could not be found. Check the role ID in Railway.`);
  const botMember=g.members.me||await g.members.fetch(client.user.id).catch(()=>null);
  if(!botMember?.permissions.has(PermissionFlagsBits.ManageRoles)||botMember.roles.highest.comparePositionTo(role)<=0)throw new Error(`Move KIND BOSS above the ${r.label} role and give it Manage Roles.`);
  const queue=global.__KIND_BOSS_QUEUE_STAFF_RANK;

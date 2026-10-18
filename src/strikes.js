@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const path = require('node:path');
 const { createApplicationDiscordLookup } = require('./playerDiscordLinks');
 const { punishmentFor, projectedTotal } = require('./strikePolicy');
+const { reversibleStrikeAmount } = require('./strikeAppealPolicy');
 const {
   Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
@@ -55,6 +56,19 @@ CREATE TABLE IF NOT EXISTS pending_strike_proposals (
  reason TEXT NOT NULL, source TEXT NOT NULL, staff_identity TEXT NOT NULL,
  created_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', message_id TEXT,
  decided_at TEXT, decided_by TEXT, result_json TEXT
+);
+CREATE TABLE IF NOT EXISTS strike_appeals (
+ appeal_id TEXT PRIMARY KEY, player_uuid TEXT NOT NULL, username TEXT NOT NULL,
+ strike_action_id INTEGER NOT NULL, discord_user_id TEXT NOT NULL, reason TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','denied')),
+ message_id TEXT, created_at TEXT NOT NULL, decided_at TEXT, decided_by TEXT, result_json TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_strike_appeals_player
+ ON strike_appeals(player_uuid) WHERE status='pending';
+CREATE TABLE IF NOT EXISTS minecraft_punishment_reversals (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, appeal_id TEXT NOT NULL UNIQUE,
+ player_uuid TEXT NOT NULL, username TEXT NOT NULL, reason TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'queued', last_error TEXT, created_at TEXT NOT NULL, completed_at TEXT
 );
 CREATE TABLE IF NOT EXISTS minecraft_staff_rank_actions (
  id INTEGER PRIMARY KEY AUTOINCREMENT, app_id INTEGER NOT NULL UNIQUE,
@@ -156,16 +170,78 @@ function denyProposal(id, owner) {
 function latestFor(uuid){return db.prepare(`SELECT * FROM strike_actions WHERE player_uuid=? ORDER BY id DESC LIMIT 1`).get(uuid);}
 function withDiscordLink(player){return {...player,discordUserId:discordUserIdForPlayer(player.uuid)};}
 function activePlayers(){return db.prepare(`SELECT p.uuid,p.username,s.total FROM strike_totals s JOIN players p ON p.uuid=s.player_uuid WHERE s.total>0 ORDER BY s.total DESC,p.username COLLATE NOCASE`).all().map(withDiscordLink);}
+function latestAppealableStrike(uuid){return db.prepare(`SELECT a.* FROM strike_actions a WHERE a.player_uuid=? AND a.action='add' AND a.applied_amount>0
+ AND NOT EXISTS(SELECT 1 FROM strike_appeals ap WHERE ap.strike_action_id=a.id AND ap.status='approved') ORDER BY a.id DESC LIMIT 1`).get(uuid);}
 function activeEmbed(p){
  const a=latestFor(p.uuid); const discordUserId=discordUserIdForPlayer(p.uuid); const e=new EmbedBuilder().setTitle(`⚠️ ${p.username}`).setDescription(`**Minecraft username:** ${p.username}\n**Discord account:** ${discordUserId ? `<@${discordUserId}>` : 'No approved application link found'}\n**Current strikes:** ${p.total}`).setTimestamp(a?new Date(a.created_at):new Date());
  if(a)e.addFields({name:'Most recent change',value:`${a.action==='add'?'+':'-'}${a.applied_amount}`,inline:true},{name:'Reason',value:a.reason.slice(0,1024),inline:false},{name:'Staff',value:(a.staff_identity||'Unknown').slice(0,1024),inline:true},{name:'Source',value:a.source,inline:true}); return e;
+}
+function activeRows(uuid){
+ const pending=db.prepare(`SELECT 1 FROM strike_appeals WHERE player_uuid=? AND status='pending'`).get(uuid);
+ const available=latestAppealableStrike(uuid);
+ return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`strike:appeal:${uuid}`).setLabel(pending?'Appeal Pending':available?'Appeal This Strike':'No Strike to Appeal').setStyle(ButtonStyle.Primary).setDisabled(Boolean(pending)||!available))];
+}
+function appealEmbed(appeal){
+ const discordUserId=appeal.discord_user_id;
+ const action=db.prepare(`SELECT action,applied_amount,reason,staff_identity,created_at FROM strike_actions WHERE id=?`).get(appeal.strike_action_id);
+ return new EmbedBuilder().setColor(0xf59e0b).setTitle(`Strike appeal · ${appeal.username}`)
+  .setDescription(`**Minecraft username:** ${appeal.username}\n**Discord account:** <@${discordUserId}>\n**Appeal submitted by:** <@${discordUserId}>\n**Appeal reason:** ${appeal.reason}`)
+  .addFields({name:'Strike being appealed',value:`+${action?.applied_amount||0} · ${action?.reason||'Strike record unavailable'}`,inline:false},
+   {name:'Original staff member',value:(action?.staff_identity||'Unknown').slice(0,1024),inline:true})
+  .setFooter({text:`Appeal ${appeal.appeal_id}`}).setTimestamp(new Date(appeal.created_at));
+}
+const appealRows=id=>[new ActionRowBuilder().addComponents(
+ new ButtonBuilder().setCustomId(`strike:approve-appeal:${id}`).setLabel('Approve Appeal · Reverse').setStyle(ButtonStyle.Success),
+ new ButtonBuilder().setCustomId(`strike:deny-appeal:${id}`).setLabel('Deny Appeal').setStyle(ButtonStyle.Danger)
+)];
+async function publishAppeal(id){
+ const appeal=db.prepare(`SELECT * FROM strike_appeals WHERE appeal_id=? AND status='pending'`).get(id);
+ if(!appeal||!strikeApprovalChannelId)return;
+ const channel=await client.channels.fetch(strikeApprovalChannelId);
+ if(!channel?.isTextBased())throw new Error('Strike appeal review channel is unavailable');
+ if(appeal.message_id){const existing=await channel.messages.fetch(appeal.message_id).catch(()=>null);if(existing){await existing.edit({embeds:[appealEmbed(appeal)],components:appealRows(id),allowedMentions:{parse:[]}});return;}}
+ const message=await channel.send({embeds:[appealEmbed(appeal)],components:appealRows(id),allowedMentions:{parse:[]}});
+ db.prepare(`UPDATE strike_appeals SET message_id=? WHERE appeal_id=? AND status='pending'`).run(message.id,id);
+}
+function createAppeal(uuid,discordUserId,reason){
+ const player=getPlayerByUuid.get(uuid);if(!player||player.total<=0)throw new Error('No active strike is available to appeal.');
+ const latestAdd=latestAppealableStrike(uuid);
+ if(!latestAdd)throw new Error('There is no unreviewed strike available to appeal.');
+ const now=new Date().toISOString(),id=crypto.randomUUID();
+ db.prepare(`INSERT INTO strike_appeals(appeal_id,player_uuid,username,strike_action_id,discord_user_id,reason,created_at)
+   VALUES(?,?,?,?,?,?,?)`).run(id,uuid,player.username,latestAdd.id,discordUserId,reason.trim(),now);
+ return id;
+}
+function decideAppeal(id,owner,approve){
+ return db.transaction(()=>{
+  const appeal=db.prepare(`SELECT * FROM strike_appeals WHERE appeal_id=?`).get(id);
+  if(!appeal)throw new Error('Strike appeal not found');
+  if(appeal.status!=='pending')throw new Error(`This appeal was already ${appeal.status}`);
+  let result=null;
+  if(approve){
+   const original=db.prepare(`SELECT * FROM strike_actions WHERE id=? AND player_uuid=? AND action='add'`).get(appeal.strike_action_id,appeal.player_uuid);
+   if(!original||original.applied_amount<=0)throw new Error('The strike being appealed is no longer available for reversal.');
+   const currentTotal=getTotal.get(appeal.player_uuid)?.total||0;
+   const amountToReverse=reversibleStrikeAmount(currentTotal,original.applied_amount);
+   result=amountToReverse>0
+    ? applyActionTx({actionId:`appeal-reversal:${id}`,playerUuid:appeal.player_uuid,username:appeal.username,action:'remove',amount:amountToReverse,
+      reason:`Approved appeal: ${appeal.reason}`,source:'appeal',staffIdentity:owner})
+    : {ok:true,username:appeal.username,appliedAmount:0,previousTotal:currentTotal,newTotal:currentTotal};
+   db.prepare(`INSERT INTO minecraft_punishment_reversals(appeal_id,player_uuid,username,reason,created_at)
+    VALUES(?,?,?,?,?)`).run(id,appeal.player_uuid,appeal.username,`Approved strike appeal: ${appeal.reason}`,new Date().toISOString());
+  }
+  const status=approve?'approved':'denied';
+  db.prepare(`UPDATE strike_appeals SET status=?,decided_at=?,decided_by=?,result_json=? WHERE appeal_id=? AND status='pending'`)
+   .run(status,new Date().toISOString(),owner,result?JSON.stringify(result):null,id);
+  return {appeal,result};
+ })();
 }
 async function syncActiveEntry(uuid){
  if(!client.isReady())return; const p=db.prepare(`SELECT p.uuid,p.username,s.total FROM players p JOIN strike_totals s ON s.player_uuid=p.uuid WHERE p.uuid=?`).get(uuid); if(!p)return;
  const channel=await client.channels.fetch(STRIKE_LOG_CHANNEL_ID).catch(()=>null); if(!channel?.isTextBased())return;
  const map=db.prepare(`SELECT message_id FROM discord_active_messages WHERE player_uuid=?`).get(uuid);
  if(p.total<=0){if(map){const m=await channel.messages.fetch(map.message_id).catch(()=>null);if(m)await m.delete().catch(()=>{});db.prepare(`DELETE FROM discord_active_messages WHERE player_uuid=?`).run(uuid);}return;}
- let m=map?await channel.messages.fetch(map.message_id).catch(()=>null):null; if(m)await m.edit({embeds:[activeEmbed(p)]}); else {m=await channel.send({embeds:[activeEmbed(p)]});db.prepare(`INSERT INTO discord_active_messages(player_uuid,message_id,updated_at) VALUES(?,?,?) ON CONFLICT(player_uuid) DO UPDATE SET message_id=excluded.message_id,updated_at=excluded.updated_at`).run(uuid,m.id,new Date().toISOString());}
+ let m=map?await channel.messages.fetch(map.message_id).catch(()=>null):null; if(m)await m.edit({embeds:[activeEmbed(p)],components:activeRows(uuid)}); else {m=await channel.send({embeds:[activeEmbed(p)],components:activeRows(uuid)});db.prepare(`INSERT INTO discord_active_messages(player_uuid,message_id,updated_at) VALUES(?,?,?) ON CONFLICT(player_uuid) DO UPDATE SET message_id=excluded.message_id,updated_at=excluded.updated_at`).run(uuid,m.id,new Date().toISOString());}
 }
 async function syncAll(){for(const p of activePlayers())await syncActiveEntry(p.uuid); const rows=db.prepare(`SELECT player_uuid FROM discord_active_messages`).all();for(const r of rows){const t=getTotal.get(r.player_uuid);if(!t||t.total<=0)await syncActiveEntry(r.player_uuid);}}
 
@@ -186,6 +262,22 @@ app.get('/api/v1/strikes/actions',(req,res)=>{
     .map(action=>({...action,discordUserId:discordUserIdForPlayer(action.playerUuid),punishment:action.action==='add'?punishmentFor(action.newTotal):null}));
   const latestActionId=db.prepare(`SELECT COALESCE(MAX(id),0) AS id FROM strike_actions`).get().id;
   res.json({actions,nextCursor:actions.length?actions.at(-1).id:after,latestActionId,hasMore:actions.length===requestedLimit});
+});
+app.get('/api/v1/strikes/reversals',(req,res)=>{
+  const limit=Number(req.query.limit||25);
+  if(!Number.isSafeInteger(limit)||limit<1||limit>100)return res.status(400).json({error:'limit must be a whole number from 1 to 100'});
+  const actions=db.prepare(`SELECT id,username,reason FROM minecraft_punishment_reversals WHERE status='queued' ORDER BY id ASC LIMIT ?`).all(limit);
+  res.json({actions});
+});
+app.post('/api/v1/strikes/reversals/ack',(req,res)=>{
+  const id=Number(req.body?.id),success=req.body?.success;
+  if(!Number.isSafeInteger(id)||id<1||typeof success!=='boolean')return res.status(400).json({error:'id and success are required'});
+  const error=String(req.body?.error||'').slice(0,300);
+  const changed=success
+    ? db.prepare(`UPDATE minecraft_punishment_reversals SET status='completed',last_error=NULL,completed_at=? WHERE id=? AND status='queued'`).run(new Date().toISOString(),id).changes
+    : db.prepare(`UPDATE minecraft_punishment_reversals SET last_error=? WHERE id=? AND status='queued'`).run(error,id).changes;
+  if(!changed)return res.status(404).json({error:'Queued punishment reversal not found'});
+  res.json({ok:true});
 });
 
 const insertStaffRankAction = db.prepare(`INSERT OR IGNORE INTO minecraft_staff_rank_actions
@@ -377,6 +469,12 @@ function actionModal(kind, player) {
   return modal;
 }
 
+function appealModal(uuid, username){
+ const modal=new ModalBuilder().setCustomId(`strike:appeal-submit:${uuid}`).setTitle(`Appeal strike · ${username}`.slice(0,45));
+ modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reason').setLabel('Why should this strike/punishment be reversed?').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)));
+ return modal;
+}
+
 client.once(Events.ClientReady, async () => {
   console.log(`Strike system logged in as ${client.user.tag}`);
   try { await ensureApprovalChannel(); }
@@ -384,7 +482,9 @@ client.once(Events.ClientReady, async () => {
   await ensurePanel();
   await syncAll();
   await refreshPendingProposalPosts();
+  await refreshPendingAppealPosts();
   retryProposalPosts();
+  retryAppealPosts();
 });
 
 async function refreshPendingProposalPosts() {
@@ -404,6 +504,20 @@ async function retryProposalPosts() {
 }
 const proposalRetryTimer=setInterval(retryProposalPosts,30000);
 proposalRetryTimer.unref?.();
+async function refreshPendingAppealPosts(){
+ if(!client.isReady()||!strikeApprovalChannelId)return;
+ for(const appeal of db.prepare(`SELECT appeal_id FROM strike_appeals WHERE status='pending' ORDER BY created_at`).all()){
+  try{await publishAppeal(appeal.appeal_id);}catch(error){console.error('Could not refresh pending strike appeal:',error.message);break;}
+ }
+}
+async function retryAppealPosts(){
+ if(!client.isReady()||!strikeApprovalChannelId)return;
+ for(const appeal of db.prepare(`SELECT appeal_id FROM strike_appeals WHERE status='pending' AND message_id IS NULL ORDER BY created_at LIMIT 10`).all()){
+  try{await publishAppeal(appeal.appeal_id);}catch(error){console.error('Could not publish strike appeal:',error.message);break;}
+ }
+}
+const appealRetryTimer=setInterval(retryAppealPosts,30000);
+appealRetryTimer.unref?.();
 
 async function ensureApprovalChannel() {
   if (strikeApprovalChannelId) {
@@ -456,6 +570,43 @@ client.on(Events.InteractionCreate, async i => {
       const proposal=denyProposal(id,`${i.user.tag} (${i.user.id})`);
       await i.message.edit({embeds:[EmbedBuilder.from(i.message.embeds[0]).setColor(0xef4444)],components:[],content:`Denied by <@${i.user.id}> · No strike change was applied for **${proposal.username}**.`,allowedMentions:{parse:[]}});
       return i.reply({content:'Proposal denied. No strike was added or removed.',flags:MessageFlags.Ephemeral});
+    }
+
+    if (i.isButton() && i.customId.startsWith('strike:approve-appeal:')) {
+      if (!owner(i)) return i.reply({content:'Only the owner can approve strike appeals and reverse punishments.',flags:MessageFlags.Ephemeral});
+      const id=i.customId.slice('strike:approve-appeal:'.length);
+      const {appeal,result}=decideAppeal(id,`${i.user.tag} (${i.user.id})`,true);
+      await syncActiveEntry(appeal.player_uuid).catch(console.error);
+      const reversal=db.prepare(`SELECT id FROM minecraft_punishment_reversals WHERE appeal_id=?`).get(id);
+      const appealResult=`Appeal approved by <@${i.user.id}>. Removed ${result.appliedAmount} strike(s) from **${appeal.username}** (new total: ${result.newTotal}). Minecraft unban/unjail queued${reversal?` as reversal #${reversal.id}`:''}.`;
+      await i.message.edit({embeds:[EmbedBuilder.from(i.message.embeds[0]).setColor(0x22c55e)],components:[],content:appealResult,allowedMentions:{parse:[]}});
+      return i.reply({content:`✅ ${appealResult}`,flags:MessageFlags.Ephemeral,allowedMentions:{parse:[]}});
+    }
+    if (i.isButton() && i.customId.startsWith('strike:deny-appeal:')) {
+      if (!owner(i)) return i.reply({content:'Only the owner can decide strike appeals.',flags:MessageFlags.Ephemeral});
+      const id=i.customId.slice('strike:deny-appeal:'.length);
+      const {appeal}=decideAppeal(id,`${i.user.tag} (${i.user.id})`,false);
+      await syncActiveEntry(appeal.player_uuid).catch(console.error);
+      await i.message.edit({embeds:[EmbedBuilder.from(i.message.embeds[0]).setColor(0xef4444)],components:[],content:`Appeal denied by <@${i.user.id}> for **${appeal.username}**. The strike and punishment were not changed.`,allowedMentions:{parse:[]}});
+      return i.reply({content:'Appeal denied. No strike or punishment change was applied.',flags:MessageFlags.Ephemeral});
+    }
+    if (i.isButton() && i.customId.startsWith('strike:appeal:')) {
+      const uuid=i.customId.slice('strike:appeal:'.length),linkedDiscord=discordUserIdForPlayer(uuid);
+      if (!linkedDiscord || linkedDiscord!==i.user.id) return i.reply({content:'Only the Discord account linked to this Minecraft profile can submit its appeal.',flags:MessageFlags.Ephemeral});
+      const player=getPlayerByUuid.get(uuid);
+      if (!player || player.total<=0 || !latestAppealableStrike(uuid)) return i.reply({content:'There is no active strike available to appeal on this profile.',flags:MessageFlags.Ephemeral});
+      if (db.prepare(`SELECT 1 FROM strike_appeals WHERE player_uuid=? AND status='pending'`).get(uuid)) return i.reply({content:'An appeal for this member is already awaiting the owner’s review.',flags:MessageFlags.Ephemeral});
+      return i.showModal(appealModal(uuid,player.username));
+    }
+    if (i.isModalSubmit() && i.customId.startsWith('strike:appeal-submit:')) {
+      const uuid=i.customId.slice('strike:appeal-submit:'.length);
+      if (discordUserIdForPlayer(uuid)!==i.user.id) return i.reply({content:'Only the Discord account linked to this Minecraft profile can submit its appeal.',flags:MessageFlags.Ephemeral});
+      const reason=i.fields.getTextInputValue('reason').trim();
+      if (!reason) return i.reply({content:'Please explain why you believe the strike or punishment should be reversed.',flags:MessageFlags.Ephemeral});
+      const id=createAppeal(uuid,i.user.id,reason);
+      await publishAppeal(id);
+      await syncActiveEntry(uuid).catch(console.error);
+      return i.reply({content:'Your appeal was sent to the Owner for review. If approved, the strike will be corrected and the Minecraft ban/jail will be reversed.',flags:MessageFlags.Ephemeral});
     }
 
     if (!allowed(i)) {

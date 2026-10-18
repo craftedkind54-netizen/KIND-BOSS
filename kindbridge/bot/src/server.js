@@ -47,7 +47,7 @@ export function server(store, c, youtube, ready = () => true) {
         return;
       }
       if (u.pathname.startsWith('/bridge/')) {
-        if (!equalSecret(req.headers.authorization, `Bearer ${c.secret}`)) return reply(401, { error: 'Unauthorized' });
+        if (!equalSecret(req.headers.authorization, `Bearer ${c.kindBridgeSecret || c.secret}`)) return reply(401, { error: 'Unauthorized' });
         if (u.pathname === '/bridge/jobs' && req.method === 'GET') { store.set('bridgeSeen', Date.now()); return reply(200, { job: store.lease() }); }
         if (u.pathname === '/bridge/ack' && req.method === 'POST') {
           const body = JSON.parse((await readBody(req)).toString());
@@ -68,7 +68,7 @@ export function server(store, c, youtube, ready = () => true) {
       if (u.pathname === '/youtube/websub' && req.method === 'POST') {
         const body = await readBody(req);
         const signature = req.headers['x-hub-signature'] || '';
-        const expected = `sha1=${createHmac('sha1', c.secret).update(body).digest('hex')}`;
+        const expected = `sha1=${createHmac('sha1', c.kindBridgeSecret || c.secret).update(body).digest('hex')}`;
         if (!equalSecret(signature, expected)) return reply(403, { error: 'Bad signature' });
         youtube.ingest(feedEntries(body.toString()), true);
         return reply(200, { ok: true });

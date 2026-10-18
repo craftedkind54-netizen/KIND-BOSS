@@ -8,8 +8,9 @@ const { punishmentFor, projectedTotal } = require('./strikePolicy');
 const { reversibleStrikeAmount } = require('./strikeAppealPolicy');
 const { createStaffCommandEmbed } = require('./staffAudit');
 const { createActivePlayerGoal } = require('./activePlayerGoal');
+const { createActiveGoalCard } = require('./activeGoalCard');
 const {
-  Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
+  Client, GatewayIntentBits, Events, EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
   StringSelectMenuBuilder, ChannelType, PermissionFlagsBits
 } = require('discord.js');
@@ -278,39 +279,18 @@ function activeGoalSettingsEmbed(){
 function activeGoalSettingsRows(){return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('activegoal:set').setLabel('Set Active Goal').setStyle(ButtonStyle.Primary))];}
 function activeGoalProgressEmbed(){
   const g=activePlayerGoal.snapshot();
-  const formatDuration=seconds=>{
-    const totalMinutes=Math.floor(seconds/60);
-    const hours=Math.floor(totalMinutes/60);
-    const minutes=totalMinutes%60;
-    return hours?`${hours}h ${minutes}m`:`${minutes}m`;
-  };
-  const progressBar=(value,max,segments=10)=>{
-    const filled=Math.max(0,Math.min(segments,Math.floor((value/Math.max(1,max))*segments)));
-    return `\`${'■'.repeat(filled)}${'□'.repeat(segments-filled)}\``;
-  };
-  const enoughPlayers=g.sampleFresh&&g.onlinePlayers>=g.targetPlayers;
-  const liveCount=g.sampleFresh
-    ? `**${g.onlinePlayers} / ${g.targetPlayers}**\n${progressBar(g.onlinePlayers,g.targetPlayers,8)}`
-    : `⏳ No server data\n${progressBar(0,g.targetPlayers,8)}`;
-  const todayProgress=`**${formatDuration(g.secondsToday)} / ${formatDuration(g.requiredSeconds)}**\n${progressBar(g.secondsToday,g.requiredSeconds,8)}\n${g.dayQualified?'✅ Complete':enoughPlayers?'🟢 Counting':'⏸️ Paused'}`;
-  const streakProgress=`**${g.streak} / 7 days**\n${progressBar(g.streak,7,7)}`;
-
-  const progressEmbed=new EmbedBuilder().setColor(0x35c5b5)
+  const filename='kind-smp-weekly-player-goal.png';
+  const file=new AttachmentBuilder(createActiveGoalCard(g),{name:filename});
+  const current=g.sampleFresh?`${g.onlinePlayers} players online`:'Waiting for Minecraft server data';
+  const duration=formatGoalDuration(g.requiredSeconds);
+  const embed=new EmbedBuilder().setColor(0x35c5b5)
     .setTitle('🏆 KIND SMP - Weekly Player Goal')
-    .setDescription(`Get everyone online and help the server reach its community goal!\n\n🟦 **${g.targetPlayers} players** · **${formatDuration(g.requiredSeconds)} daily** · **7 days in a row** · tracked **24/7**`)
-    .addFields(
-      {name:'👥 PLAYERS',value:liveCount,inline:true},
-      {name:'⏱️ TODAY',value:todayProgress,inline:true},
-      {name:'🔥 WEEKLY STREAK',value:streakProgress,inline:true}
-    )
-    .setFooter({text:`Timer runs only while the player target is met · ${g.timezone}`});
-  const prizeEmbed=new EmbedBuilder().setColor(0xf2c14e)
-    .setTitle('🎁 PRIZE')
-    .setDescription(g.prize?`✨ **${g.prize}**\n\nReach the 7-day streak to complete the community goal.`:'The owner has not chosen a prize yet.')
-    .setFooter({text:'The owner sets the reward · Staff arrange fulfillment'});
-  return [progressEmbed,prizeEmbed];
+    .setDescription(`**${g.targetPlayers} players** for **${duration} each day**, for **7 days in a row** · tracked **24/7**\n${current} · Today ${formatGoalDuration(g.secondsToday)} / ${formatGoalDuration(g.requiredSeconds)} · Streak ${g.streak} / 7 days · Prize: ${g.prize||'not set'}`)
+    .setImage(`attachment://${filename}`)
+    .setFooter({text:`Timer only counts while the target is met · ${g.timezone}`});
+  return {embed,files:[file]};
 }
-async function upsertGoalMessage(channelId,key,embed,components=[]){
+async function upsertGoalMessage(channelId,key,embed,components=[],files=[]){
   const channel=await client.channels.fetch(channelId).catch(()=>null);
   if(!channel?.isTextBased())throw new Error(`Active goal channel ${channelId} is unavailable`);
   const embeds=Array.isArray(embed)?embed:[embed];
@@ -320,8 +300,10 @@ async function upsertGoalMessage(channelId,key,embed,components=[]){
   matches.sort((a,b)=>b.createdTimestamp-a.createdTimestamp);
   let message=matches[0]||null;
   for(const duplicate of matches.slice(1))await duplicate.delete().catch(()=>{});
-  if(message)await message.edit({embeds,components});
-  else message=await channel.send({embeds,components});
+  const payload={embeds,components};
+  if(files.length){payload.files=files;payload.attachments=[];}
+  if(message)await message.edit(payload);
+  else message=await channel.send(payload);
   db.prepare('INSERT INTO app_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,message.id);
   return message;
 }
@@ -334,7 +316,7 @@ async function refreshActiveGoalProgress(force=false){
   if(!client?.isReady())return;
   const now=Date.now(); if(!force&&now-lastGoalPanelEdit<60000)return;
   lastGoalPanelEdit=now;
-  try{await upsertGoalMessage(ACTIVE_GOAL_PROGRESS_CHANNEL_ID,'active_goal_progress_message_id',activeGoalProgressEmbed());}
+  try{const panel=activeGoalProgressEmbed();await upsertGoalMessage(ACTIVE_GOAL_PROGRESS_CHANNEL_ID,'active_goal_progress_message_id',panel.embed,[],panel.files);}
   catch(error){console.error('Active player goal progress update failed:',error.message);}
 }
 async function announceActiveGoalCompletion(progress){

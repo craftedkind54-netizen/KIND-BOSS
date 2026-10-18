@@ -4,6 +4,7 @@ import io.papermc.paper.advancement.AdvancementDisplay;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.command.*;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.entity.Player;
 import org.bukkit.event.*;
 import org.bukkit.event.entity.PlayerDeathEvent;
@@ -16,11 +17,16 @@ import java.net.URI;
 import java.net.http.*;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class KindBossBridge extends JavaPlugin implements Listener, CommandExecutor {
     private HttpClient http;
     private String baseUrl, secret;
+    private boolean strikePollBusy;
     private final PlainTextComponentSerializer plain = PlainTextComponentSerializer.plainText();
 
     @Override public void onEnable() {
@@ -31,6 +37,7 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         Bukkit.getPluginManager().registerEvents(this, this);
         if (getCommand("strike") != null) getCommand("strike").setExecutor(this);
         for (Player p : Bukkit.getOnlinePlayers()) syncPlayer(p);
+        Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::pollApprovedStrikeActions, 60L, 100L);
         postEvent("server_online", null, null);
         getLogger().info("KIND BOSS bridge + activity feed enabled for Paper 1.21.11.");
     }
@@ -73,23 +80,156 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         post("/api/v1/players/upsert", "{\"uuid\":\""+esc(p.getUniqueId().toString())+"\",\"username\":\""+esc(p.getName())+"\"}");
     }
 
+    private void pollApprovedStrikeActions() {
+        if (strikePollBusy || !configured(null)) return;
+        strikePollBusy = true;
+        long cursor = getConfig().getLong("strike-action-cursor", -1L);
+        String path = "/api/v1/strikes/actions?after=" + Math.max(0L, cursor) + "&limit=100";
+        HttpRequest req = HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(Duration.ofSeconds(15))
+                .header("Authorization", "Bearer " + secret).GET().build();
+        http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> {
+            if (err != null || res.statusCode() < 200 || res.statusCode() >= 300) {
+                strikePollBusy = false;
+                if (err != null) getLogger().fine("Strike action poll failed: " + err.getMessage());
+                return;
+            }
+            try {
+                if (cursor < 0) {
+                    long latest = jsonNumber(res.body(), "latestActionId", 0L);
+                    Bukkit.getScheduler().runTask(this, () -> {
+                        getConfig().set("strike-action-cursor", latest);
+                        saveConfig();
+                        strikePollBusy = false;
+                    });
+                    return;
+                }
+                List<String> actions = jsonObjects(res.body(), "actions");
+                Bukkit.getScheduler().runTask(this, () -> {
+                    try {
+                        long nextCursor = cursor;
+                        for (String action : actions) {
+                            long id = jsonNumber(action, "id", -1L);
+                            if (id <= nextCursor) continue;
+                            if ("add".equals(jsonString(action, "action"))) {
+                                String username = jsonString(action, "username");
+                                String reason = jsonString(action, "reason");
+                                int total = (int) jsonNumber(action, "newTotal", 0L);
+                                String punishment = jsonString(jsonObject(action, "punishment"), "type");
+                                String duration = jsonString(jsonObject(action, "punishment"), "duration");
+                                if (username != null && username.matches("[A-Za-z0-9_]{1,16}") && duration != null) {
+                                    String safeReason = ("Approved strike level " + total + (reason == null || reason.isBlank() ? "" : ": " + reason))
+                                            .replaceAll("[\\r\\n]", " ").replaceAll("[;\\"]", "'");
+                                    String command = "jail".equals(punishment)
+                                            ? "jail " + username + " " + duration + " " + safeReason
+                                            : "tempban " + username + " " + duration + " " + safeReason;
+                                    if (!Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command)) {
+                                        getLogger().warning("CraftedCore did not accept the strike punishment command for " + username + ". Cursor was not advanced.");
+                                        break;
+                                    }
+                                }
+                            }
+                            nextCursor = id;
+                            getConfig().set("strike-action-cursor", nextCursor);
+                            saveConfig();
+                        }
+                    } finally { strikePollBusy = false; }
+                });
+            } catch (Exception e) {
+                getLogger().warning("Could not read approved strike actions: " + e.getMessage());
+                strikePollBusy = false;
+            }
+        });
+    }
+
+    private static List<String> jsonObjects(String json, String field) {
+        List<String> objects = new ArrayList<>();
+        int array = json.indexOf("\"" + field + "\"");
+        int start = array < 0 ? -1 : json.indexOf('[', array);
+        if (start < 0) return objects;
+        boolean quoted = false, escaped = false;
+        int depth = 0, objectStart = -1;
+        for (int i = start + 1; i < json.length(); i++) {
+            char ch = json.charAt(i);
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (ch == '\\') escaped = true;
+                else if (ch == '"') quoted = false;
+                continue;
+            }
+            if (ch == '"') { quoted = true; continue; }
+            if (ch == '{') { if (depth++ == 0) objectStart = i; }
+            else if (ch == '}' && depth > 0 && --depth == 0) objects.add(json.substring(objectStart, i + 1));
+            else if (ch == ']' && depth == 0) break;
+        }
+        return objects;
+    }
+
+    private static String jsonObject(String json, String field) {
+        Matcher m = Pattern.compile("\\\"" + Pattern.quote(field) + "\\\"\\s*:\\s*(\\{[^{}]*})").matcher(json);
+        return m.find() ? m.group(1) : "";
+    }
+
+    private static String jsonString(String json, String field) {
+        Matcher m = Pattern.compile("\\\"" + Pattern.quote(field) + "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"").matcher(json);
+        if (!m.find()) return null;
+        return m.group(1).replace("\\\\\"", "\"").replace("\\\\n", " ").replace("\\\\r", " ").replace("\\\\\\\\", "\\");
+    }
+
+    private static long jsonNumber(String json, String field, long fallback) {
+        Matcher m = Pattern.compile("\\\"" + Pattern.quote(field) + "\\\"\\s*:\\s*(-?\\d+)").matcher(json);
+        if (!m.find()) return fallback;
+        try { return Long.parseLong(m.group(1)); } catch (NumberFormatException ignored) { return fallback; }
+    }
+
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (!sender.hasPermission("kindboss.strike")) { sender.sendMessage("§cNo permission."); return true; }
+        if (!isStaffSender(sender)) { sender.sendMessage("§cOnly a CraftedCore staff rank can manage strikes."); return true; }
         if (args.length == 1 && args[0].equalsIgnoreCase("list")) { get("/api/v1/strikes/active", sender); return true; }
         if (args.length < 4 || !(args[0].equalsIgnoreCase("add") || args[0].equalsIgnoreCase("remove"))) {
             sender.sendMessage("§e/strike add <player> <amount> <reason>");
             sender.sendMessage("§e/strike remove <player> <amount> <reason>");
             sender.sendMessage("§e/strike list"); return true;
         }
-        Player target = Bukkit.getPlayerExact(args[1]);
-        if (target == null) { sender.sendMessage("§cPlayer must be online for this command."); return true; }
         int amount; try { amount = Integer.parseInt(args[2]); } catch (Exception e) { sender.sendMessage("§cAmount must be a number."); return true; }
         if (amount < 1) { sender.sendMessage("§cAmount must be at least 1."); return true; }
         String reason = String.join(" ", java.util.Arrays.copyOfRange(args, 3, args.length));
-        syncPlayer(target);
-        String actionId = UUID.randomUUID().toString();
-        String body = "{\"actionId\":\""+actionId+"\",\"playerUuid\":\""+target.getUniqueId()+"\",\"username\":\""+esc(target.getName())+"\",\"action\":\""+args[0].toLowerCase()+"\",\"amount\":"+amount+",\"reason\":\""+esc(reason)+"\",\"source\":\"minecraft\",\"staffIdentity\":\""+esc(sender.getName())+"\"}";
-        postWithReply("/api/v1/strikes/action", body, sender); return true;
+        Player target = Bukkit.getPlayerExact(args[1]);
+        if (target != null) {
+            submitStrike(target.getUniqueId().toString(), target.getName(), args[0], amount, reason, sender);
+        } else {
+            resolveOfflinePlayer(args[1], args[0], amount, reason, sender);
+        }
+        return true;
+    }
+
+    private boolean isStaffSender(CommandSender sender) {
+        if (sender instanceof ConsoleCommandSender || sender instanceof RemoteConsoleCommandSender) return true;
+        if (!(sender instanceof Player player)) return false;
+        Plugin core = Bukkit.getPluginManager().getPlugin("CraftedCore");
+        if (core == null || !core.isEnabled()) return false;
+        try { return Boolean.TRUE.equals(core.getClass().getMethod("canManageStrikes", UUID.class).invoke(core, player.getUniqueId())); }
+        catch (ReflectiveOperationException | LinkageError ex) { return false; }
+    }
+
+    private void resolveOfflinePlayer(String username, String action, int amount, String reason, CommandSender sender) {
+        if (!configured(sender)) return;
+        String path = "/api/v1/players/resolve?username=" + java.net.URLEncoder.encode(username, StandardCharsets.UTF_8);
+        HttpRequest req = HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(Duration.ofSeconds(15))
+                .header("Authorization", "Bearer " + secret).GET().build();
+        http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> Bukkit.getScheduler().runTask(this, () -> {
+            if (err != null) sender.sendMessage("§cCould not find that player: " + err.getMessage());
+            else if (res.statusCode() == 404) sender.sendMessage("§cUnknown player. They must have joined the SMP at least once.");
+            else if (res.statusCode() < 200 || res.statusCode() >= 300) sender.sendMessage("§cPlayer lookup failed with HTTP " + res.statusCode() + ".");
+            else {
+                String uuid = jsonString(res.body(), "uuid"), name = jsonString(res.body(), "username");
+                if (uuid == null || name == null) sender.sendMessage("§cPlayer lookup returned incomplete data.");
+                else submitStrike(uuid, name, action, amount, reason, sender);
+            }
+        }));
+    }
+
+    private void submitStrike(String uuid, String username, String action, int amount, String reason, CommandSender sender) {
+        String body = "{\"playerUuid\":\"" + esc(uuid) + "\",\"username\":\"" + esc(username) + "\",\"action\":\"" + esc(action.toLowerCase()) + "\",\"amount\":" + amount + ",\"reason\":\"" + esc(reason) + "\",\"source\":\"minecraft\",\"staffIdentity\":\"" + esc(sender.getName()) + "\"}";
+        postWithReply("/api/v1/strikes/action", body, sender);
     }
 
     private HttpRequest request(String path, String body) {
@@ -101,7 +241,7 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         http.sendAsync(request(path, body), HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> Bukkit.getScheduler().runTask(this, () -> {
             if (sender == null) return;
             if (err != null) sender.sendMessage("§cBridge error: "+err.getMessage());
-            else if (res.statusCode() >= 200 && res.statusCode() < 300) sender.sendMessage("§aKIND BOSS strike system updated. "+res.body());
+            else if (res.statusCode() >= 200 && res.statusCode() < 300) sender.sendMessage(res.body().contains("\"pending\":true") ? "§eStrike proposal sent to the owner for approval. No strike change applies until approval." : "§aKIND BOSS strike system updated. "+res.body());
             else sender.sendMessage("§cBridge returned HTTP "+res.statusCode()+": "+res.body());
         }));
     }

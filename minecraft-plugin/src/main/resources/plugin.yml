@@ -10,4 +10,6 @@ commands:
     permission: kindboss.strike
 permissions:
   kindboss.strike:
-    default: op
+    # Rank checks run through CraftedCore's canManageStrikes API in the executor.
+    # Keep the Bukkit permission open so General Staff are not blocked by op status.
+    default: true

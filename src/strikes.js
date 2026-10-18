@@ -272,17 +272,34 @@ function activeGoalSettingsEmbed(){
 function activeGoalSettingsRows(){return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('activegoal:set').setLabel('Set Active Goal').setStyle(ButtonStyle.Primary))];}
 function activeGoalProgressEmbed(){
   const g=activePlayerGoal.snapshot();
-  const hours=Math.floor(g.secondsToday/3600), minutes=Math.floor((g.secondsToday%3600)/60);
-  const time=`${hours}h ${minutes}m / ${Math.round(g.requiredSeconds/60)}m`;
-  const streakText=g.dayQualified?`${g.streak}/7 days · today complete`:`${g.streak}/7 days · today ${time}`;
-  const prize=g.prize||'No prize has been set yet.';
-  return new EmbedBuilder().setColor(0x5865f2).setTitle('KIND SMP — Active Player Goal')
-    .setDescription(`**${g.targetPlayers} players online at once** for **${Math.round(g.requiredSeconds/60)} minutes each day**, for **7 consecutive days**.`)
-    .addFields({name:'Online now',value:g.sampleFresh?`${g.onlinePlayers} / ${g.targetPlayers}`:'Server status unavailable',inline:true},
-      {name:'Today',value:g.dayQualified?'✅ Goal reached':time,inline:true},
-      {name:'Weekly streak',value:streakText,inline:true},
-      {name:'Prize',value:prize,inline:false})
-    .setFooter({text:`Day: ${g.day} · ${g.timezone} · online counts sampled from the Minecraft server`}).setTimestamp();
+  const formatDuration=seconds=>{
+    const totalMinutes=Math.floor(seconds/60);
+    const hours=Math.floor(totalMinutes/60);
+    const minutes=totalMinutes%60;
+    return hours?`${hours}h ${minutes}m`:`${minutes}m`;
+  };
+  const progressBar=(value,max,segments=10)=>{
+    const filled=Math.max(0,Math.min(segments,Math.floor((value/Math.max(1,max))*segments)));
+    return `\`${'▰'.repeat(filled)}${'▱'.repeat(segments-filled)}\``;
+  };
+  const liveCount=g.sampleFresh
+    ? `${progressBar(g.onlinePlayers,g.targetPlayers)}\n**${g.onlinePlayers} / ${g.targetPlayers} players**`
+    : '⏳ Waiting for Minecraft server data';
+  const todayProgress=g.dayQualified
+    ? `✅ **Daily target complete**\n${progressBar(g.requiredSeconds,g.requiredSeconds)}  ${formatDuration(g.requiredSeconds)} / ${formatDuration(g.requiredSeconds)}`
+    : `${progressBar(g.secondsToday,g.requiredSeconds)}\n**${formatDuration(g.secondsToday)} / ${formatDuration(g.requiredSeconds)}** with enough players online`;
+  const streakProgress=`${progressBar(g.streak,7,7)}\n**${g.streak} / 7 days**`;
+
+  return new EmbedBuilder().setColor(0x35c5b5)
+    .setTitle('🏆 KIND SMP · Weekly Player Goal')
+    .setDescription(`Get everyone online and help the server reach its community goal!\n\nKeep **${g.targetPlayers} players online together** for **${formatDuration(g.requiredSeconds)} each day**. Meet the target on **7 days in a row** to complete the challenge.`)
+    .addFields(
+      {name:'👥 Players online now',value:liveCount,inline:true},
+      {name:'🔥 Weekly streak',value:streakProgress,inline:true},
+      {name:'⏱️ Today’s progress',value:todayProgress,inline:false},
+      {name:'🎁 Prize',value:g.prize||'The owner has not chosen a prize yet.',inline:false}
+    )
+    .setFooter({text:`A missed day resets the streak · Timezone: ${g.timezone}`});
 }
 async function upsertGoalMessage(channelId,key,embed,components=[]){
   const channel=await client.channels.fetch(channelId).catch(()=>null);

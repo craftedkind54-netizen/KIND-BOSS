@@ -6,7 +6,7 @@
   "engines": { "node": ">=24.17.0 <25" },
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check src/tickets.js && node --check src/announcements.js && node --check src/strikes.js && node --check src/strikeAppealPolicy.js && node --check src/playerDiscordLinks.js && node --check src/strikePolicy.js && node --check src/venting.js && node --check src/staffApplications.js && node --check src/intros.js && node --check src/interviewQuestions.js && node --check kindbridge/bot/src/main.js && node --check kindbridge/bot/src/discord.js && node --check kindbridge/bot/src/server.js",
+    "check": "node --check index.js && node --check src/tickets.js && node --check src/announcements.js && node --check src/strikes.js && node --check src/staffAudit.js && node --check src/strikeAppealPolicy.js && node --check src/playerDiscordLinks.js && node --check src/strikePolicy.js && node --check src/venting.js && node --check src/staffApplications.js && node --check src/intros.js && node --check src/interviewQuestions.js && node --check kindbridge/bot/src/main.js && node --check kindbridge/bot/src/discord.js && node --check kindbridge/bot/src/server.js",
     "test": "node --test test/*.test.js kindbridge/bot/test/*.test.js"
   },
   "dependencies": {

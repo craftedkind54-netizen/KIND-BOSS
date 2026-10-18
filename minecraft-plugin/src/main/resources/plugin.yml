@@ -1,5 +1,5 @@
 name: KindBossBridge
-version: 1.2.2
+version: 1.2.3
 main: com.kindboss.bridge.KindBossBridge
 api-version: '1.21'
 author: KIND BOSS

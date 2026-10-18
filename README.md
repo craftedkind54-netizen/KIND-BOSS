@@ -97,6 +97,8 @@ Build `minecraft-plugin/` with Java 21 + Maven. Put the resulting JAR in the Pap
 
 Commands: `/strike add <online-player> <amount> <reason>`, `/strike remove <online-player> <amount> <reason>`, `/strike list`.
 
+Owner Pass / Approve decisions in Staff Applications grant the configured Discord rank role and queue the matching CraftedCore rank for the applicant's verified, whitelisted Minecraft account. The bot requires Manage Roles and its role above the target role. Minecraft rank mapping is General Staff → `general_staff`, Head of General Staff → `head_staff_2nd`, Senior Staff → `senior_staff`, Head Senior Staff → `head_staff`, Co-Owner → `co_owner`, and Owner → `owner`. Applicants without a ready Minecraft account link cannot be passed until their account is linked and whitelisted.
+
 ## Minecraft activity feed (v1.1.0)
 Set `MINECRAFT_FEED_CHANNEL_ID=1555986926052315208` in Railway.
 

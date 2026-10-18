@@ -4,6 +4,7 @@ const interviewQuestions = require('./interviewQuestions');
 const fs = require('fs');
 const path = require('path');
 const { DateTime } = require('luxon');
+const { minecraftRankForTarget } = require('./staffMinecraftRanks');
 const client = global.__KIND_BOSS_CLIENT;
 
 const GUILD_ID=process.env.GUILD_ID||'1555704317552361563';
@@ -17,6 +18,7 @@ const RANKS=[{key:'general',label:'General Staff',role:GENERAL},{key:'head_gener
 const PERSISTENT_DATA_DIR = process.env.PERSISTENT_DATA_DIR || process.env.DATA_DIR || '/data';
 try { fs.mkdirSync(PERSISTENT_DATA_DIR, { recursive: true }); } catch (e) { console.warn('[Staff Applications] Could not create persistent data directory:', e.message); }
 const STAFF_DB_FILE = process.env.STAFF_APPLICATIONS_DB_PATH || path.join(PERSISTENT_DATA_DIR, 'staff-applications.db');
+const KIND_BRIDGE_DB_FILE = process.env.KIND_BRIDGE_DB_PATH || path.join(PERSISTENT_DATA_DIR, 'kind-smp.db');
 const db=new Database(STAFF_DB_FILE);
 console.log(`[Staff Applications] Persistent database: ${STAFF_DB_FILE}`);
 db.exec(`CREATE TABLE IF NOT EXISTS staff_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);CREATE TABLE IF NOT EXISTS staff_apps(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL,target_rank TEXT NOT NULL,source TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'submitted',answers TEXT NOT NULL DEFAULT '{}',score INTEGER,notes TEXT,review_message_id TEXT,voice_channel_id TEXT,final_message_id TEXT,announce_ts INTEGER,created_at INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS staff_approvals(app_id INTEGER NOT NULL,staff_id TEXT NOT NULL,role_kind TEXT NOT NULL,PRIMARY KEY(app_id,staff_id));CREATE TABLE IF NOT EXISTS staff_availability(staff_id TEXT PRIMARY KEY,timezone TEXT NOT NULL,windows TEXT NOT NULL,updated_at INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS interview_approvals(app_id INTEGER NOT NULL,staff_id TEXT NOT NULL,role_kind TEXT NOT NULL,PRIMARY KEY(app_id,staff_id));`);
@@ -43,6 +45,16 @@ async function safeRoleOverwrites(g, entries){
 }
 async function text(id){const c=await client.channels.fetch(id).catch(()=>null);return c?.isTextBased()?c:null;}
 function currentRank(m){for(const r of [...RANKS].reverse())if(has(m,r.role))return r.key;return has(m,SMP)?'member':null;}
+function minecraftAccountForDiscordUser(userId){
+ if(!fs.existsSync(KIND_BRIDGE_DB_FILE))return null;
+ let linkDb;
+ try{
+  linkDb=new Database(KIND_BRIDGE_DB_FILE,{readonly:true,fileMustExist:true});
+  linkDb.pragma('busy_timeout = 2000');
+  return linkDb.prepare(`SELECT username,uuid FROM applications WHERE user_id=? AND state='ready' AND uuid IS NOT NULL ORDER BY decided DESC LIMIT 1`).get(userId)||null;
+ }catch(e){console.warn('[Staff Applications] Could not resolve linked Minecraft account:',e.message);return null;}
+ finally{try{linkDb?.close();}catch{}}
+}
 function normalTargets(m){const c=currentRank(m);if(c==='member')return['general'];if(c==='general')return['head_general','senior'];if(c==='head_general')return['senior'];if(c==='senior')return['head_senior'];if(c==='head_senior')return['co_owner'];if(c==='co_owner')return['owner'];return[];}
 function panel(){return new EmbedBuilder().setTitle('🛡️ KIND SMP Staff Applications').setDescription(`**Public applications:** ${setting('open')==='1'?'🟢 Open':'🔴 Closed'}\n\nUse **Direct Interview** for a leadership-selected member. Senior Staff+ should set availability so KIND BOSS can offer interview times automatically.`);}
 function panelRows(){return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('sa:open').setLabel('Open Applications').setStyle(ButtonStyle.Success),new ButtonBuilder().setCustomId('sa:close').setLabel('Close Applications').setStyle(ButtonStyle.Danger),new ButtonBuilder().setCustomId('sa:direct').setLabel('Direct Interview').setStyle(ButtonStyle.Primary)),new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('sa:availability').setLabel('🗓️ Set Availability').setStyle(ButtonStyle.Secondary),new ButtonBuilder().setCustomId('sa:myAvailability').setLabel('📅 My Availability').setStyle(ButtonStyle.Secondary),new ButtonBuilder().setCustomId('sa:availabilityHelp').setLabel('❓ Availability Help').setStyle(ButtonStyle.Secondary))];}
@@ -225,7 +237,29 @@ function resultPages(blocks){
 }
 async function cleanupInterviewChannels(id,g){const a=appById(id);if(!a)return;const tc=a.interview_text_channel_id?await g.channels.fetch(a.interview_text_channel_id).catch(()=>null):null;const vc=a.voice_channel_id?await g.channels.fetch(a.voice_channel_id).catch(()=>null):null;if(vc)await vc.delete('Interview finished; results posted').catch(()=>{});if(tc)await tc.delete('Interview finished; results posted').catch(()=>{});db.prepare('UPDATE staff_apps SET interview_text_channel_id=NULL,voice_channel_id=NULL WHERE id=?').run(id);}
 async function deleteApplicantChannelAfterApproval(id,g){const a=appById(id);if(!a?.private_channel_id)return;const pc=await g.channels.fetch(a.private_channel_id).catch(()=>null);if(pc){await new Promise(r=>setTimeout(r,5000));await pc.delete('Staff application approved; applicant workflow complete').catch(()=>{});}db.prepare('UPDATE staff_apps SET private_channel_id=NULL WHERE id=?').run(id);}
-async function finalize(id,g){const a=appById(id),r=rank(a.target_rank),m=await g.members.fetch(a.user_id).catch(()=>null);if(m&&r?.role)await m.roles.add(r.role,'KIND BOSS staff application approved').catch(()=>{});db.prepare("UPDATE staff_apps SET status='approved' WHERE id=?").run(id);}
+async function finalize(id,g){
+ const a=appById(id),r=rank(a?.target_rank),minecraftRank=minecraftRankForTarget(a?.target_rank);
+ if(!a||!r||!minecraftRank)throw new Error('The application target does not have a configured Discord and Minecraft rank.');
+ if(!r.role)throw new Error(`The Discord role for ${r.label} is not configured.`);
+ const account=minecraftAccountForDiscordUser(a.user_id);
+ if(!account?.username||!account?.uuid)throw new Error('No verified, whitelisted Minecraft account is linked to this Discord applicant. Link and whitelist their SMP account before final approval.');
+ if(!/^[A-Za-z0-9_]{1,16}$/.test(account.username)||!/^[0-9a-f-]{36}$/i.test(account.uuid))throw new Error('The linked Minecraft account record is invalid.');
+ const member=await g.members.fetch(a.user_id).catch(()=>null);
+ if(!member)throw new Error('The applicant is no longer a member of the Discord server.');
+ const role=await g.roles.fetch(r.role).catch(()=>null);
+ if(!role)throw new Error(`The configured Discord role for ${r.label} could not be found.`);
+ const botMember=g.members.me||await g.members.fetch(client.user.id).catch(()=>null);
+ if(!botMember?.permissions.has(PermissionFlagsBits.ManageRoles)||botMember.roles.highest.comparePositionTo(role)<=0)throw new Error(`Move KIND BOSS above the ${r.label} role and give it Manage Roles.`);
+ const queue=global.__KIND_BOSS_QUEUE_STAFF_RANK;
+ if(typeof queue!=='function')throw new Error('Minecraft rank delivery is unavailable. Restart KIND BOSS and try again.');
+ const alreadyHadRole=member.roles.cache.has(role.id);
+ if(!alreadyHadRole)await member.roles.add(role,'KIND BOSS staff application approved');
+ try{
+  queue({appId:id,discordUserId:a.user_id,minecraftUuid:account.uuid,minecraftUsername:account.username,targetRank:a.target_rank,minecraftRank});
+  db.prepare("UPDATE staff_apps SET status='approved' WHERE id=?").run(id);
+ }catch(e){if(!alreadyHadRole)await member.roles.remove(role,'Rolling back incomplete staff application approval').catch(()=>{});throw e;}
+ return {role:role.name,username:account.username,minecraftRank};
+}
 async function announceDue(){const now=Math.floor(Date.now()/1000),rows=db.prepare("SELECT * FROM staff_apps WHERE status='approved' AND announce_ts IS NOT NULL AND announce_ts<=?").all(now),c=await text(ANNOUNCE);for(const a of rows){if(c)await c.send({embeds:[new EmbedBuilder().setTitle('🎉 Staff Announcement').setDescription(`Congratulations <@${a.user_id}>! They have passed the staff process for **${rank(a.target_rank).label}**.`)]});db.prepare("UPDATE staff_apps SET status='announced' WHERE id=?").run(a.id);}}
 client.once(Events.ClientReady,async()=>{console.log(`✅ Staff Applications ready for guild ${GUILD_ID}.`);await ensureControl().catch(e=>console.error('staffApplications startup error',e));setInterval(()=>announceDue().catch(e=>console.error('staffApplications announce error',e)),30000);announceDue().catch(()=>{});});
 client.on(Events.InteractionCreate,async i=>{try{if(!i.guild||typeof i.customId!=='string'||!i.customId.startsWith('sa:'))return;console.log(`[Staff Applications] ${i.user.tag} -> ${i.customId}`);if(i.guild.id!==GUILD_ID)return eph(i,'❌ This panel belongs to a different server.');const m=await i.guild.members.fetch(i.user.id);
@@ -266,7 +300,29 @@ if(i.isModalSubmit()&&i.customId.startsWith('sa:catNotesSubmit:')){const [, ,idS
 if(i.isButton()&&i.customId.startsWith('sa:completeCategory:')){if(!seniorPlus(m))return eph(i,'❌ Senior Staff+ only.');const id=Number(i.customId.split(':')[2]),a=appById(id),s=state(a),idx=s.category||0,cur=currentInterviewer(s);if(i.user.id!==cur)return eph(i,`⏳ It is <@${cur}>’s turn. They must complete this category.`);if((s.selected||[]).length!==3)return eph(i,'❌ Select exactly 3 questions first.');if(!catFor(a,idx).bonus&&s.grades?.[idx]===undefined)return eph(i,'❌ Choose a category score from 0/3 to 3/3 first.');s.questionHistory=s.questionHistory||{};s.questionHistory[idx]=[...s.selected];s.selected=[];if(idx<CATEGORIES.length-1){s.category=idx+1;s.awaitingCategoryBrief=true;saveState(id,s);return i.update({embeds:[boardEmbed(a,s)],components:boardComponents(a,s)});}saveState(id,s);return i.update({embeds:[new EmbedBuilder().setTitle('🏁 All Categories Complete').setDescription(`All 8 scored categories and the Bonus / Troll Check are complete.\n\n**Current total: ${CATEGORIES.reduce((sum,cat,idx)=>sum+(cat.bonus?0:Number(s.grades?.[idx]||0)),0)}/24**\n\nPress **Finish Interview** to lock the results and send them to Final Approval.`)],components:[new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`sa:finishInterview:${id}`).setLabel('🏁 Finish Interview').setStyle(ButtonStyle.Success))]});}
 if(i.isButton()&&i.customId.startsWith('sa:finishInterview:')){if(!seniorPlus(m))return eph(i,'❌ Senior Staff+ only.');return i.showModal(finishModal(Number(i.customId.split(':')[2])));}
 if(i.isModalSubmit()&&i.customId.startsWith('sa:finishSubmit:')){if(!seniorPlus(m))return eph(i,'❌ Senior Staff+ only.');const id=Number(i.customId.split(':')[2]),a=appById(id),s=state(a);if(CATEGORIES.some((cat,idx)=>!cat.bonus&&s.grades?.[idx]===undefined))return eph(i,'❌ All 8 core categories must be graded first.');if(s.questionBankVersion&&!s.questionHistory?.[8])return eph(i,'❌ Complete the Bonus / Troll Check first.');db.prepare("UPDATE staff_apps SET notes=?,announce_ts=NULL,status='final_review' WHERE id=?").run(i.fields.getTextInputValue('finalnotes')||'None',id);await postFinal(id);await eph(i,'✅ Interview locked and sent to Final Approval. The Owner will make the final Pass/Fail decision.');await cleanupInterviewChannels(id,i.guild);return;}
-if(i.isButton()&&i.customId.startsWith('sa:final:')){if(!has(m,OWNER))return eph(i,'❌ Only the Owner can make the final Pass/Fail decision.');const [, ,action,idS]=i.customId.split(':'),id=Number(idS),a=appById(id);if(action==='deny'){db.prepare("UPDATE staff_apps SET status='denied',announce_ts=NULL WHERE id=?").run(id);const pc=a.private_channel_id?await i.guild.channels.fetch(a.private_channel_id).catch(()=>null):null;if(pc)await pc.send({embeds:[new EmbedBuilder().setTitle('Final Interview Decision').setDescription(`Your application for **${rank(a.target_rank).label}** was not approved this time.`)]}).catch(()=>{});return i.update({content:`🔴 Final decision: **DO NOT PASS** by Owner <@${i.user.id}>.`,embeds:i.message.embeds,components:[]});}announcementDrafts.set(`${id}:${i.user.id}`,{});return i.reply({...announcementScheduleUI(id,i.user.id),flags:MessageFlags.Ephemeral});}
+if(i.isButton()&&i.customId.startsWith('sa:final:')){
+ if(!has(m,OWNER))return eph(i,'❌ Only the Owner can make the final Pass/Fail decision.');
+ const [, ,action,idS]=i.customId.split(':'),id=Number(idS),a=appById(id);
+ if(!a)return eph(i,'Application not found.');
+ if(action==='deny'){
+  db.prepare("UPDATE staff_apps SET status='denied',announce_ts=NULL WHERE id=?").run(id);
+  const pc=a.private_channel_id?await i.guild.channels.fetch(a.private_channel_id).catch(()=>null):null;
+  if(pc)await pc.send({embeds:[new EmbedBuilder().setTitle('Final Interview Decision').setDescription(`Your application for **${rank(a.target_rank).label}** was not approved this time.`)]}).catch(()=>{});
+  return i.update({content:`🔴 Final decision: **DO NOT PASS** by Owner <@${i.user.id}>.`,embeds:i.message.embeds,components:[]});
+ }
+ if(action!=='approve')return eph(i,'Unknown final decision.');
+ if(['approved','announced'].includes(a.status))return eph(i,'This application has already been approved.');
+ await i.deferUpdate();
+ try{
+  const assigned=await finalize(id,i.guild);
+  const passed=`✅ **PASSED — approved by Owner <@${i.user.id}>.**\nDiscord role: **${assigned.role}**\nMinecraft rank queued: **${assigned.minecraftRank}** for **${assigned.username}**.`;
+  await i.message.edit({content:passed,embeds:i.message.embeds,components:[]});
+  const pc=a.private_channel_id?await i.guild.channels.fetch(a.private_channel_id).catch(()=>null):null;
+  if(pc)await pc.send({embeds:[new EmbedBuilder().setTitle('✅ Final Decision — Passed').setDescription(`The Owner approved your application for **${rank(a.target_rank).label}**. Your Discord role is active, and your linked Minecraft rank is being applied.`)]}).catch(()=>{});
+  announcementDrafts.set(`${id}:${i.user.id}`,{});
+  return i.followUp({...announcementScheduleUI(id,i.user.id),flags:MessageFlags.Ephemeral});
+ }catch(e){console.error('[Staff Applications] Final approval failed:',e);return i.followUp({content:`❌ Approval was not completed: ${e.message}`,flags:MessageFlags.Ephemeral});}
+}
 if(i.isStringSelectMenu()&&/^sa:announce(Date|Hour|Minute|AmPm):/.test(i.customId)){if(!has(m,OWNER))return eph(i,'❌ Only the Owner can schedule the announcement.');const parts=i.customId.split(':'),kind=parts[1],id=Number(parts[2]),key=`${id}:${i.user.id}`,d=announcementDrafts.get(key)||{};if(kind==='announceDate')d.date=i.values[0];if(kind==='announceHour')d.hour=i.values[0];if(kind==='announceMinute')d.minute=i.values[0];if(kind==='announceAmPm')d.ampm=i.values[0];announcementDrafts.set(key,d);return i.update(announcementScheduleUI(id,i.user.id));}
-if(i.isButton()&&i.customId.startsWith('sa:announceConfirm:')){if(!has(m,OWNER))return eph(i,'❌ Only the Owner can approve and schedule the announcement.');const id=Number(i.customId.split(':')[2]),a=appById(id),key=`${id}:${i.user.id}`,d=announcementDrafts.get(key)||{};if(!d.date||!d.hour||!d.minute||!d.ampm)return eph(i,'❌ Select the date, hour, minutes, and AM/PM first.');const dt=DateTime.fromFormat(`${d.date} ${d.hour}:${d.minute} ${d.ampm}`,'yyyy-MM-dd h:mm a',{zone:'Pacific/Honolulu'});if(!dt.isValid||dt.toMillis()<=Date.now())return eph(i,'❌ Choose a future announcement time.');const ts=Math.floor(dt.toSeconds());db.prepare("UPDATE staff_apps SET announce_ts=? WHERE id=?").run(ts,id);await finalize(id,i.guild);announcementDrafts.delete(key);const pc=a.private_channel_id?await i.guild.channels.fetch(a.private_channel_id).catch(()=>null):null;if(pc)await pc.send({embeds:[new EmbedBuilder().setTitle('✅ Final Decision — Passed').setDescription(`The Owner approved your application for **${rank(a.target_rank).label}**.\n\n🎉 Announcement scheduled for <t:${ts}:F>.`)]}).catch(()=>{});const fc=await text(FINAL);if(fc&&a.final_message_id){const msg=await fc.messages.fetch(a.final_message_id).catch(()=>null);if(msg)await msg.edit({content:`✅ **PASSED — approved by Owner <@${i.user.id}>.** Announcement: <t:${ts}:F>`,embeds:msg.embeds,components:[]}).catch(()=>{});}await i.update({content:`✅ Passed. Announcement scheduled for <t:${ts}:F>. The applicant channel will now close.`,embeds:[],components:[]});await deleteApplicantChannelAfterApproval(id,i.guild);return;}
+if(i.isButton()&&i.customId.startsWith('sa:announceConfirm:')){if(!has(m,OWNER))return eph(i,'❌ Only the Owner can schedule the announcement.');const id=Number(i.customId.split(':')[2]),a=appById(id),key=`${id}:${i.user.id}`,d=announcementDrafts.get(key)||{};if(!a||!['approved','announced'].includes(a.status))return eph(i,'❌ The staff application must be passed before its announcement can be scheduled.');if(!d.date||!d.hour||!d.minute||!d.ampm)return eph(i,'❌ Select the date, hour, minutes, and AM/PM first.');const dt=DateTime.fromFormat(`${d.date} ${d.hour}:${d.minute} ${d.ampm}`,'yyyy-MM-dd h:mm a',{zone:'Pacific/Honolulu'});if(!dt.isValid||dt.toMillis()<=Date.now())return eph(i,'❌ Choose a future announcement time.');const ts=Math.floor(dt.toSeconds());db.prepare("UPDATE staff_apps SET announce_ts=? WHERE id=?").run(ts,id);announcementDrafts.delete(key);const pc=a.private_channel_id?await i.guild.channels.fetch(a.private_channel_id).catch(()=>null):null;if(pc)await pc.send({embeds:[new EmbedBuilder().setTitle('🎉 Staff Announcement Scheduled').setDescription(`Your announcement for **${rank(a.target_rank).label}** is scheduled for <t:${ts}:F>.`)]}).catch(()=>{});await i.update({content:`✅ Announcement scheduled for <t:${ts}:F>.`,embeds:[],components:[]});await deleteApplicantChannelAfterApproval(id,i.guild);return;}
 }catch(e){console.error('staffApplications interaction error',e);if(i.isRepliable())eph(i,'❌ Something went wrong. Check Railway logs.').catch(()=>{});}});

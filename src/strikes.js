@@ -356,7 +356,7 @@ app.post('/api/v1/active-goal/sample',async(req,res)=>{
     const online=Number(req.body?.onlinePlayers);
     const progress=activePlayerGoal.recordSample(online);
     await announceActiveGoalCompletion(progress);
-    await refreshActiveGoalProgress();
+    await refreshActiveGoalProgress(true);
     res.json({ok:true,progress:{day:progress.day,secondsToday:progress.secondsToday,streak:progress.streak,dayQualified:progress.dayQualified}});
   }catch(error){res.status(400).json({error:error.message});}
 });
@@ -434,7 +434,10 @@ app.post('/api/v1/minecraft/event', async (req,res) => {
     if(type==='active_sample'){
       const online=Number(req.body?.onlinePlayers);
       const progress=activePlayerGoal.recordSample(online);
-      await refreshActiveGoalProgress();
+      // Each sample comes from the live Bukkit tab list. Keep the artwork in
+      // sync with that count instead of leaving it stale behind the 60s panel
+      // refresh throttle.
+      await refreshActiveGoalProgress(true);
       return res.json({ok:true,day:progress.day,secondsToday:progress.secondsToday,streak:progress.streak});
     }
     if(type==='server_offline'){

@@ -30,3 +30,9 @@ test('renders the current online count into the image instead of leaving the pla
   assert.notDeepEqual(fourOnline, waiting);
   assert.notDeepEqual(targetReached, fourOnline);
 });
+
+test('renders the rolling seven-day average in the players tile', () => {
+  const withoutAverage = createActiveGoalCard({ ...sampleGoal, onlinePlayers: 5, sampleFresh: true });
+  const withAverage = createActiveGoalCard({ ...sampleGoal, onlinePlayers: 5, sampleFresh: true, averageOnlinePlayers: 4.6 });
+  assert.notDeepEqual(withAverage, withoutAverage);
+});

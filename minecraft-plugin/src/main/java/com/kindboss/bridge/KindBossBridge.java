@@ -118,7 +118,7 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
                                 String duration = jsonString(jsonObject(action, "punishment"), "duration");
                                 if (username != null && username.matches("[A-Za-z0-9_]{1,16}") && duration != null) {
                                     String safeReason = ("Approved strike level " + total + (reason == null || reason.isBlank() ? "" : ": " + reason))
-                                            .replaceAll("[\\r\\n]", " ").replaceAll("[;\\"]", "'");
+                                            .replaceAll("[\\r\\n;]", " ").replace((char) 34, ' ');
                                     String command = "jail".equals(punishment)
                                             ? "jail " + username + " " + duration + " " + safeReason
                                             : "tempban " + username + " " + duration + " " + safeReason;

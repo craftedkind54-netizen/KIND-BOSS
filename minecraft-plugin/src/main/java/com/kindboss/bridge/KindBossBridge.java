@@ -28,6 +28,7 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
     private String baseUrl, secret;
     private boolean strikePollBusy;
     private boolean staffRankPollBusy;
+    private boolean appealReversalPollBusy;
     private final PlainTextComponentSerializer plain = PlainTextComponentSerializer.plainText();
 
     @Override public void onEnable() {
@@ -40,6 +41,7 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         for (Player p : Bukkit.getOnlinePlayers()) syncPlayer(p);
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::pollApprovedStrikeActions, 60L, 100L);
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::pollApprovedStaffRankActions, 80L, 100L);
+        Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::pollApprovedAppealReversals, 100L, 100L);
         postEvent("server_online", null, null);
         getLogger().info("KIND BOSS bridge + activity feed enabled for Paper 1.21.11.");
     }
@@ -202,6 +204,61 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         http.sendAsync(req, HttpResponse.BodyHandlers.discarding()).whenComplete((res, err) -> {
             if (err != null || res.statusCode() < 200 || res.statusCode() >= 300) {
                 getLogger().warning("Could not acknowledge staff rank action #" + id + "; it will be retried.");
+            }
+        });
+    }
+
+    private void pollApprovedAppealReversals() {
+        if (appealReversalPollBusy || !configured(null)) return;
+        appealReversalPollBusy = true;
+        HttpRequest req = HttpRequest.newBuilder(URI.create(baseUrl + "/api/v1/strikes/reversals?limit=25"))
+                .timeout(Duration.ofSeconds(15)).header("Authorization", "Bearer " + secret).GET().build();
+        http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> {
+            if (err != null || res.statusCode() < 200 || res.statusCode() >= 300) {
+                if (err != null) getLogger().fine("Appeal reversal poll failed: " + err.getMessage());
+                appealReversalPollBusy = false;
+                return;
+            }
+            try {
+                List<String> actions = jsonObjects(res.body(), "actions");
+                if (actions.isEmpty()) { appealReversalPollBusy = false; return; }
+                Bukkit.getScheduler().runTask(this, () -> processAppealReversals(actions));
+            } catch (Exception e) {
+                getLogger().warning("Could not read approved appeal reversals: " + e.getMessage());
+                appealReversalPollBusy = false;
+            }
+        });
+    }
+
+    private void processAppealReversals(List<String> actions) {
+        for (String action : actions) {
+            long id = jsonNumber(action, "id", -1L);
+            String username = jsonString(action, "username");
+            String reason = jsonString(action, "reason");
+            boolean success = id > 0 && username != null && username.matches("[A-Za-z0-9_]{1,16}");
+            String error = success ? "" : "Invalid appeal reversal payload";
+            if (success) {
+                String safeReason = ("Approved strike appeal" + (reason == null || reason.isBlank() ? "" : ": " + reason))
+                        .replaceAll("[\\r\\n;]", " ").replace((char) 34, ' ');
+                if (safeReason.length() > 350) safeReason = safeReason.substring(0, 350);
+                boolean unban = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "unban " + username + " " + safeReason);
+                boolean unjail = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "unjail " + username + " " + safeReason);
+                success = unban && unjail;
+                if (!success) error = "CraftedCore did not accept both unban and unjail commands";
+                else getLogger().info("Reversed Minecraft ban/jail for " + username + " after an owner-approved strike appeal.");
+            }
+            acknowledgeAppealReversal(id, success, error);
+        }
+        appealReversalPollBusy = false;
+    }
+
+    private void acknowledgeAppealReversal(long id, boolean success, String error) {
+        if (id < 1) return;
+        String body = "{\"id\":" + id + ",\"success\":" + success + ",\"error\":\"" + esc(error) + "\"}";
+        HttpRequest req = request("/api/v1/strikes/reversals/ack", body);
+        http.sendAsync(req, HttpResponse.BodyHandlers.discarding()).whenComplete((res, err) -> {
+            if (err != null || res.statusCode() < 200 || res.statusCode() >= 300) {
+                getLogger().warning("Could not acknowledge appeal reversal #" + id + "; it will be retried.");
             }
         });
     }

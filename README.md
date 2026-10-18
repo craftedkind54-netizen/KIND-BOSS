@@ -8,6 +8,8 @@ Strike requests and active-strike records identify the Minecraft player by UUID 
 
 On first startup, the bot creates a private `#strike-approvals` channel with access for the owner role and the bot only. The bot needs Manage Channels for this one-time setup. General Staff can submit strike proposals in game or through the strike panel; totals and punishments change only after the owner approves the proposal. Keep the Minecraft bridge URL pointed at the combined Railway domain.
 
+Each active member strike card also has an **Appeal This Strike** button. Only the Discord account linked to that Minecraft profile through an approved application can submit an appeal. Appeals go to the owner-only `#strike-approvals` queue. Approving one records an auditable strike correction and queues both CraftedCore `/unban` and `/unjail` for the linked Minecraft username; denying it leaves the strike unchanged. The Paper bridge must be version 1.2.1 or newer to deliver approved reversals.
+
 Do not remove either old Railway service or volume until the merged deployment is healthy and both databases have been copied. Back up both volumes first. Once the combined service is running, stop the old Kind Bridge service so the shared Discord bot token is not connected twice.
 
 ## v1.22.0 - Rank-based promotion boards

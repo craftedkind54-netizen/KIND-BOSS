@@ -281,11 +281,10 @@ function activeGoalProgressEmbed(){
   const g=activePlayerGoal.snapshot();
   const filename='kind-smp-weekly-player-goal.png';
   const file=new AttachmentBuilder(createActiveGoalCard(g),{name:filename});
-  const current=g.sampleFresh?`${g.onlinePlayers} players online`:'Waiting for Minecraft server data';
   const duration=formatGoalDuration(g.requiredSeconds);
   const embed=new EmbedBuilder().setColor(0x35c5b5)
     .setTitle('🏆 KIND SMP - Weekly Player Goal')
-    .setDescription(`**${g.targetPlayers} players** for **${duration} each day**, for **7 days in a row** · tracked **24/7**\n${current} · Today ${formatGoalDuration(g.secondsToday)} / ${formatGoalDuration(g.requiredSeconds)} · Streak ${g.streak} / 7 days · Prize: ${g.prize||'not set'}`)
+    .setDescription(`**${g.targetPlayers} players** for **${duration} each day**, for **7 days in a row** · tracked **24/7**\nToday ${formatGoalDuration(g.secondsToday)} / ${formatGoalDuration(g.requiredSeconds)} · Streak ${g.streak} / 7 days · Prize: ${g.prize||'not set'}`)
     .setImage(`attachment://${filename}`)
     .setFooter({text:`Timer only counts while the target is met · ${g.timezone}`});
   return {embed,files:[file]};

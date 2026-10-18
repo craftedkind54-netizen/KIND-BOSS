@@ -4,6 +4,8 @@ KIND BOSS and Kind Bridge now run in one Railway process, one Discord bot client
 
 Use one `DISCORD_TOKEN` for the combined bot. Keep the existing Railway `BRIDGE_SECRET` for the Minecraft plugin. The service requires Node 24. It keeps the two SQLite databases as separate files under the service data directory so their schemas and records remain isolated. Mount the existing KIND BOSS persistent volume at `/app/data`; migrate the Kind Bridge `kind-smp.db` into that same mounted directory before switching traffic. Railway allows one volume per service, so the two old databases must be copied into the chosen volume before stopping the old services.
 
+Strike requests and active-strike records identify the Minecraft player by UUID and look up the Discord account from that player's accepted application in `kind-smp.db`. The linked account is shown as a Discord mention alongside the Minecraft username. If the application database is mounted somewhere else, set `KIND_BRIDGE_DB_PATH` to its full path.
+
 On first startup, the bot creates a private `#strike-approvals` channel with access for the owner role and the bot only. The bot needs Manage Channels for this one-time setup. General Staff can submit strike proposals in game or through the strike panel; totals and punishments change only after the owner approves the proposal. Keep the Minecraft bridge URL pointed at the combined Railway domain.
 
 Do not remove either old Railway service or volume until the merged deployment is healthy and both databases have been copied. Back up both volumes first. Once the combined service is running, stop the old Kind Bridge service so the shared Discord bot token is not connected twice.

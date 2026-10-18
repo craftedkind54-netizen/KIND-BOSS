@@ -61,9 +61,16 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
     @EventHandler public void onJoin(PlayerJoinEvent e) {
         syncPlayer(e.getPlayer());
         postEvent("join", e.getPlayer(), null);
+        // Refresh the goal card as soon as the tab list changes instead of
+        // waiting for the regular 20-second sample.
+        postActivePlayerSample();
     }
 
-    @EventHandler public void onQuit(PlayerQuitEvent e) { postEvent("leave", e.getPlayer(), null); }
+    @EventHandler public void onQuit(PlayerQuitEvent e) {
+        postEvent("leave", e.getPlayer(), null);
+        // Bukkit removes the quitter after this event, so sample next tick.
+        Bukkit.getScheduler().runTask(this, this::postActivePlayerSample);
+    }
 
     @EventHandler public void onAdvancement(PlayerAdvancementDoneEvent e) {
         AdvancementDisplay display = e.getAdvancement().getDisplay();

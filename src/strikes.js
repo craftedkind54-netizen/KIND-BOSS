@@ -282,7 +282,8 @@ function activeGoalProgressEmbed(){
   const filename='kind-smp-weekly-player-goal.png';
   const file=new AttachmentBuilder(createActiveGoalCard(g),{name:filename});
   const duration=formatGoalDuration(g.requiredSeconds);
-  const weeklyAverage=g.averageOnlinePlayers==null?'collecting samples':`${g.averageOnlinePlayers.toFixed(1)} players across ${formatGoalDuration(g.averageCoverageSeconds)}`;
+  const averageCoverage=g.averageCoverageSeconds<60?`${Math.round(g.averageCoverageSeconds)}s`:formatGoalDuration(g.averageCoverageSeconds);
+  const weeklyAverage=g.averageOnlinePlayers==null?'collecting samples':`${g.averageOnlinePlayers.toFixed(1)} players · ${averageCoverage} tracked`;
   const embed=new EmbedBuilder().setColor(0x35c5b5)
     .setTitle('🏆 KIND SMP - Weekly Player Goal')
     .setDescription(`**${g.targetPlayers} players** for **${duration} each day**, for **7 days in a row** · tracked **24/7**\nToday ${formatGoalDuration(g.secondsToday)} / ${formatGoalDuration(g.requiredSeconds)} · Streak ${g.streak} / 7 days · Prize: ${g.prize||'not set'}\nPast 7-day average: **${weeklyAverage}**`)

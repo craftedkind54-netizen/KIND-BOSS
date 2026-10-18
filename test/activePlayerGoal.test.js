@@ -28,14 +28,20 @@ test('counts consecutive qualified days and displays the owner-defined prize wit
   db.close();
 });
 
-test('a sample below the target breaks the daily continuous timer', () => {
+test('daily timer only counts intervals where both tab-list samples meet the target', () => {
   const { db, goal, setNow } = setup();
   goal.setGoal(5, 2);
   const start = Date.parse('2026-10-18T00:00:00Z');
   setNow(start); goal.recordSample(5, start);
   setNow(start + 30_000); goal.recordSample(5, start + 30_000);
   setNow(start + 60_000); goal.recordSample(4, start + 60_000);
-  assert.equal(goal.snapshot().secondsToday, 0);
+  assert.equal(goal.snapshot().secondsToday, 30);
+  setNow(start + 90_000); goal.recordSample(5, start + 90_000);
+  assert.equal(goal.snapshot().secondsToday, 30);
+  setNow(start + 120_000); goal.recordSample(5, start + 120_000);
+  assert.equal(goal.snapshot().secondsToday, 60);
+  goal.markOffline(start + 130_000);
+  assert.equal(goal.snapshot().secondsToday, 60);
   db.close();
 });
 

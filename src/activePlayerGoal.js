@@ -74,8 +74,6 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
     if (!state.dayQualified) {
       if (onlinePlayers >= settings.targetPlayers && state.lastOnline >= settings.targetPlayers && gap > 0 && gap <= MAX_SAMPLE_GAP_SECONDS && previousDay === day) {
         state.daySeconds = Math.min(settings.requiredSeconds, Number(state.daySeconds || 0) + gap);
-      } else if (onlinePlayers < settings.targetPlayers || gap > MAX_SAMPLE_GAP_SECONDS) {
-        state.daySeconds = 0;
       }
     }
 
@@ -103,7 +101,6 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
     const state = readState();
     state.lastSampleAt = null;
     state.lastOnline = 0;
-    if (!state.dayQualified) state.daySeconds = 0;
     writeState(state);
     return snapshot(timestamp);
   }

@@ -181,6 +181,26 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         try { return Long.parseLong(m.group(1)); } catch (NumberFormatException ignored) { return fallback; }
     }
 
+    private static String safeChatText(String value) {
+        return value == null ? "unknown" : value.replaceAll("[\\r\\n§]", "");
+    }
+
+    private void sendActiveStrikeList(String response, CommandSender sender) {
+        List<String> players = jsonObjects(response, "players");
+        if (players.isEmpty()) {
+            sender.sendMessage("§eNo players currently have active strikes.");
+            return;
+        }
+        sender.sendMessage("§6Active strikes (Minecraft and linked Discord accounts):");
+        for (String player : players) {
+            String username = safeChatText(jsonString(player, "username"));
+            String discordId = jsonString(player, "discordUserId");
+            String discord = discordId == null || discordId.isBlank() ? "not linked" : "ID " + safeChatText(discordId);
+            long total = jsonNumber(player, "total", 0L);
+            sender.sendMessage("§eMinecraft: §f" + username + " §8| §9Discord: §f" + discord + " §8| §cStrikes: " + total);
+        }
+    }
+
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (!isStaffSender(sender)) { sender.sendMessage("§cOnly a CraftedCore staff rank can manage strikes."); return true; }
         if (args.length == 1 && args[0].equalsIgnoreCase("list")) { get("/api/v1/strikes/active", sender); return true; }
@@ -241,14 +261,27 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         http.sendAsync(request(path, body), HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> Bukkit.getScheduler().runTask(this, () -> {
             if (sender == null) return;
             if (err != null) sender.sendMessage("§cBridge error: "+err.getMessage());
-            else if (res.statusCode() >= 200 && res.statusCode() < 300) sender.sendMessage(res.body().contains("\"pending\":true") ? "§eStrike proposal sent to the owner for approval. No strike change applies until approval." : "§aKIND BOSS strike system updated. "+res.body());
+            else if (res.statusCode() >= 200 && res.statusCode() < 300) {
+                String username = safeChatText(jsonString(res.body(), "username"));
+                String discordId = jsonString(res.body(), "discordUserId");
+                String account = discordId == null || discordId.isBlank() ? "Discord not linked through an accepted application" : "Discord ID " + safeChatText(discordId);
+                if (res.body().contains("\"pending\":true")) {
+                    sender.sendMessage("§eStrike proposal for Minecraft §f" + username + " §e(" + account + ") sent for owner approval. No strike change applies until approval.");
+                } else {
+                    sender.sendMessage("§aStrike update for Minecraft §f" + username + " §a(" + account + ") recorded.");
+                }
+            }
             else sender.sendMessage("§cBridge returned HTTP "+res.statusCode()+": "+res.body());
         }));
     }
     private void get(String path, CommandSender sender) {
         if (!configured(sender)) return;
         HttpRequest req=HttpRequest.newBuilder(URI.create(baseUrl+path)).timeout(Duration.ofSeconds(15)).header("Authorization","Bearer "+secret).GET().build();
-        http.sendAsync(req,HttpResponse.BodyHandlers.ofString()).whenComplete((res,err)->Bukkit.getScheduler().runTask(this,()-> sender.sendMessage(err!=null?"§cBridge error: "+err.getMessage():"§eActive strikes: "+res.body())));
+        http.sendAsync(req,HttpResponse.BodyHandlers.ofString()).whenComplete((res,err)->Bukkit.getScheduler().runTask(this,()-> {
+            if (err != null) sender.sendMessage("§cBridge error: " + err.getMessage());
+            else if (res.statusCode() < 200 || res.statusCode() >= 300) sender.sendMessage("§cBridge returned HTTP " + res.statusCode() + ".");
+            else sendActiveStrikeList(res.body(), sender);
+        }));
     }
     private boolean configured(CommandSender sender) {
         boolean ok=baseUrl != null && secret != null && !baseUrl.isBlank() && !secret.isBlank() && !secret.equals("CHANGE_ME");

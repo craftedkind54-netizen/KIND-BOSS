@@ -24,6 +24,7 @@ test('strike target resolves to the Discord account from its approved applicatio
   appDb.prepare('INSERT INTO applications VALUES (?, ?, ?, ?)').run('uuid-b', 'discord-old', 'superseded', 90);
   appDb.prepare('INSERT INTO applications VALUES (?, ?, ?, ?)').run('uuid-b', 'discord-current', 'ready', 110);
   appDb.prepare('INSERT INTO applications VALUES (?, ?, ?, ?)').run('uuid-pending', 'discord-pending', 'pending', null);
+  appDb.prepare('INSERT INTO applications VALUES (?, ?, ?, ?)').run('12345678-1234-1234-1234-123456789abc', 'discord-normalized', 'ready', 120);
   appDb.close();
 
   const lookup = createApplicationDiscordLookup({ databasePath, DatabaseClass: DatabaseAdapter });
@@ -31,7 +32,22 @@ test('strike target resolves to the Discord account from its approved applicatio
   assert.equal(lookup('uuid-a'), 'discord-ready');
   assert.equal(lookup('uuid-b'), 'discord-current');
   assert.equal(lookup('uuid-pending'), null);
+  assert.equal(lookup('12345678123412341234123456789ABC'), 'discord-normalized');
   assert.equal(lookup('unknown'), null);
+});
+
+test('lookup searches configured and persistent-volume fallback paths', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kind-strike-link-'));
+  const configuredPath = path.join(directory, 'missing', 'kind-smp.db');
+  const migratedDbPath = path.join(directory, 'kind-smp.db');
+  const appDb = new DatabaseAdapter(migratedDbPath);
+  appDb.exec(`CREATE TABLE applications (uuid TEXT, user_id TEXT NOT NULL, state TEXT NOT NULL, decided INTEGER);`);
+  appDb.prepare('INSERT INTO applications VALUES (?, ?, ?, ?)').run('uuid-migrated', 'discord-migrated', 'ready', 130);
+  appDb.close();
+
+  const lookup = createApplicationDiscordLookup({ databasePath: configuredPath, databasePaths: [migratedDbPath], DatabaseClass: DatabaseAdapter });
+  t.after(() => { lookup.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  assert.equal(lookup('uuid-migrated'), 'discord-migrated');
 });
 
 test('missing or incompatible application database does not break strike handling', t => {

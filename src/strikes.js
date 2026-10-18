@@ -22,7 +22,15 @@ const API_SECRET = process.env.BRIDGE_SECRET || process.env.STRIKES_API_SECRET;
 // strike API on loopback and proxy /api/v1 through the shared public listener.
 const PORT = Number(process.env.STRIKES_API_PORT || 3001);
 const DB_PATH = process.env.STRIKES_DB_PATH || './data/strikes.db';
-const KIND_BRIDGE_DB_PATH = process.env.KIND_BRIDGE_DB_PATH || path.join(path.dirname(path.resolve(DB_PATH)), 'kind-smp.db');
+const STRIKES_DATA_DIR = path.dirname(path.resolve(DB_PATH));
+const PERSISTENT_DATA_DIR = process.env.PERSISTENT_DATA_DIR || process.env.DATA_DIR;
+const KIND_BRIDGE_DB_PATH = process.env.KIND_BRIDGE_DB_PATH || path.join(PERSISTENT_DATA_DIR || STRIKES_DATA_DIR, 'kind-smp.db');
+const KIND_BRIDGE_DB_PATHS = [
+  path.join(STRIKES_DATA_DIR, 'kind-smp.db'),
+  PERSISTENT_DATA_DIR && path.join(PERSISTENT_DATA_DIR, 'kind-smp.db'),
+  '/app/data/kind-smp.db',
+  '/data/kind-smp.db'
+].filter(Boolean);
 const GUILD_ID = process.env.GUILD_ID || '1555704317552361563';
 const STRIKE_LOG_CHANNEL_ID = process.env.STRIKE_LOG_CHANNEL_ID || '1555840868693442640';
 const STRIKE_MANAGEMENT_CHANNEL_ID = process.env.STRIKE_MANAGEMENT_CHANNEL_ID || '1555840868693442640';
@@ -82,7 +90,7 @@ if (!strikeApprovalChannelId) strikeApprovalChannelId = db.prepare(`SELECT value
 const normalizeName = n => n.trim().toLowerCase();
 const validAmount = n => Number.isSafeInteger(n) && n > 0 && n <= 1000000;
 const client = global.__KIND_BOSS_CLIENT;
-const discordUserIdForPlayer = createApplicationDiscordLookup({ databasePath: KIND_BRIDGE_DB_PATH, DatabaseClass: Database });
+const discordUserIdForPlayer = createApplicationDiscordLookup({ databasePath: KIND_BRIDGE_DB_PATH, databasePaths: KIND_BRIDGE_DB_PATHS, DatabaseClass: Database });
 
 const upsertPlayer = db.prepare(`INSERT INTO players(uuid,username,normalized_username,updated_at) VALUES(?,?,?,?) ON CONFLICT(uuid) DO UPDATE SET username=excluded.username, normalized_username=excluded.normalized_username, updated_at=excluded.updated_at`);
 const ensureTotal = db.prepare(`INSERT OR IGNORE INTO strike_totals(player_uuid,total) VALUES(?,0)`);

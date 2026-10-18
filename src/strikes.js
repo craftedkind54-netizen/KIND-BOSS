@@ -302,9 +302,9 @@ function activeGoalProgressEmbed(){
     .setTitle('🏆 KIND SMP ACTIVE PLAYER GOAL')
     .setDescription(`**${g.targetPlayers} players online · ${formatDuration(g.requiredSeconds)} daily countdown · 7-day streak**\nPlayer goal tracking is active **24/7**. The countdown starts only after the player target is reached and pauses if the count drops below it.`)
     .addFields(
-      {name:'👤 PLAYERS RIGHT NOW',value:liveCount,inline:true},
-      {name:'⏱️ COUNTDOWN',value:todayProgress,inline:true},
-      {name:'🔥 WEEKLY STREAK',value:streakProgress,inline:true},
+      {name:'👤 PLAYERS RIGHT NOW',value:liveCount,inline:false},
+      {name:'⏱️ COUNTDOWN',value:todayProgress,inline:false},
+      {name:'🔥 WEEKLY STREAK',value:streakProgress,inline:false},
       {name:'🎁 PRIZE',value:g.prize?`✨ **${g.prize}**`:'The owner has not chosen a prize yet.',inline:false}
     )
     .setThumbnail('https://mc-heads.net/avatar/Steve/128')

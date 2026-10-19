@@ -18,7 +18,13 @@ const {
   Events,
   PermissionsBitField,
 } = require('discord.js');
-const { isAnnouncementModalId, requiresAnnouncementApproval } = require('./announcementPolicy');
+const {
+  isAnnouncementModalId,
+  requiresAnnouncementApproval,
+  announcementApprovalRoleIds,
+  isAnnouncementStaff,
+  isAnnouncementOwnerOrCoOwner,
+} = require('./announcementPolicy');
 
 // =====================================================
 // CRAFTED SMP ANNOUNCEMENT BOT
@@ -111,19 +117,27 @@ function clone(data) {
 
 function isStaff(interaction) {
   return interaction.member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)
-    || [OWNER_ROLE_ID, CO_OWNER_ROLE_ID, SENIOR_STAFF_ROLE_ID, GENERAL_STAFF_ROLE_ID]
-      .some(id => interaction.member?.roles?.cache?.has(id));
+    || isAnnouncementStaff(interaction.member, {
+      owner: OWNER_ROLE_ID,
+      coOwner: CO_OWNER_ROLE_ID,
+      seniorStaff: SENIOR_STAFF_ROLE_ID,
+      generalStaff: GENERAL_STAFF_ROLE_ID,
+    });
 }
 
 function isOwnerOrCoOwner(interaction) {
   return interaction.guild?.ownerId === interaction.user?.id
-    || [OWNER_ROLE_ID, CO_OWNER_ROLE_ID].some(id => interaction.member?.roles?.cache?.has(id));
+    || isAnnouncementOwnerOrCoOwner(interaction.member, {
+      owner: OWNER_ROLE_ID,
+      coOwner: CO_OWNER_ROLE_ID,
+    });
 }
 
 function needsAnnouncementApproval(interaction, draft) {
-  const roleIds = [];
-  if (interaction.member?.roles?.cache?.has(GENERAL_STAFF_ROLE_ID)) roleIds.push('general-staff');
-  if (interaction.member?.roles?.cache?.has(SENIOR_STAFF_ROLE_ID)) roleIds.push('senior-staff');
+  const roleIds = announcementApprovalRoleIds(interaction.member, {
+    generalStaffRoleId: GENERAL_STAFF_ROLE_ID,
+    seniorStaffRoleId: SENIOR_STAFF_ROLE_ID,
+  });
   return requiresAnnouncementApproval({ type: draft.type, roleIds, owner: isOwnerOrCoOwner(interaction) || interaction.guild?.ownerId === interaction.user?.id });
 }
 

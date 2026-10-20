@@ -10,7 +10,8 @@ function fixture(options = {}) {
     global: { __KIND_BOSS_CLIENT: bot }, process: { env: { DISCORD_TOKEN: 'test' }, on() {} } };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/tickets.js'), 'utf8') + '\nthis.api = {createTicket, ticketCreationErrorMessage};', context);
-  const roleIds = ['1555840026607362099', '1555839917815238736', '1555827222688829441'];
+  const generalStaffRoleId = '1555726622982668408';
+  const roleIds = ['1555840026607362099', generalStaffRoleId, '1555839917815238736', '1555827222688829441'];
   const member = { id: '222222222222222222', user: { username: 'Player', tag: 'Player' }, toString() { return '<@' + this.id + '>'; } };
   const selected = { id: '333333333333333333', user: {bot: false}, roles: {cache: new Map([[roleIds[0], {}]])} };
   const channel = { id: '444444444444444444', async send() { if (options.sendError) throw options.sendError; }, toString() {return '<#' + this.id + '>';} };
@@ -33,13 +34,15 @@ test('all staff: duplicate owner fallback deduplicated and every overwrite resol
  const emptyGuild={roles:{resolve(){return null;}},client:{users:{resolve(){return null;}}}};
  for(const entry of entries) assert.doesNotThrow(()=>discord.PermissionOverwrites.resolve(entry,emptyGuild));
  assert.equal(entries.find(e=>e.id==='1555704317552361563').deny[0],discord.PermissionFlagsBits.ViewChannel);
- assert.equal(entries.filter(e=>e.type===0&&e.allow).length,3);
+ assert.equal(entries.filter(e=>e.type===0&&e.allow).length,4);
+ assert.ok(entries.find(e=>e.id==='1555726622982668408').allow.includes(discord.PermissionFlagsBits.ViewChannel));
 });
-test('specific staff: only selected members get access and staff roles are denied',async()=>{
+test('specific staff: selected member and General Staff get access',async()=>{
  const f=fixture(); assert.equal((await f.create({type:'specific_staff',allowedRoles:[],allowedUsers:[f.selected.id,f.selected.id]})).success,true);
  const entries=f.calls[0].permissionOverwrites;
  assert.equal(entries.filter(e=>e.id===f.selected.id).length,1);
- for(const id of f.roleIds) assert.ok(entries.find(e=>e.id===id).deny);
+ assert.ok(entries.find(e=>e.id==='1555726622982668408').allow.includes(discord.PermissionFlagsBits.ViewChannel));
+ for(const id of f.roleIds.filter(id=>id!=='1555726622982668408')) assert.ok(entries.find(e=>e.id===id).deny);
  assert.equal(entries.find(e=>e.id===f.selected.id).type,1);
 });
 test('deleted optional roles skipped; all roles missing stops creation',async()=>{

@@ -36,6 +36,10 @@ const CLOSED_TICKET_LOG_CHANNEL_ID = process.env.TICKET_LOG_CHANNEL_ID || '15558
 
 const GENERAL_STAFF_ROLE_ID = process.env.GENERAL_STAFF_ROLE_ID || '1555840026607362099';
 
+// The live KIND SMP server's General Staff (Staff) role. Keep this explicit so
+// an outdated Railway env var cannot silently omit staff from ticket access.
+const KIND_SMP_GENERAL_STAFF_ROLE_ID = '1555726622982668408';
+
 const SENIOR_STAFF_ROLE_ID = process.env.SENIOR_STAFF_ROLE_ID || '1555839917815238736';
 
 const OWNER_ROLE_ID = process.env.OWNER_ROLE_ID || '1555827222688829441';
@@ -44,6 +48,7 @@ const CO_OWNER_ROLE_ID = process.env.CO_OWNER_ROLE_ID || OWNER_ROLE_ID;
 
 const STAFF_ROLE_IDS = [
   GENERAL_STAFF_ROLE_ID,
+  KIND_SMP_GENERAL_STAFF_ROLE_ID,
   SENIOR_STAFF_ROLE_ID,
   OWNER_ROLE_ID,
   CO_OWNER_ROLE_ID,
@@ -171,9 +176,8 @@ function getStaffRoleName(member) {
   }
 
   if (
-    member.roles.cache.has(
-      GENERAL_STAFF_ROLE_ID
-    )
+    member.roles.cache.has(GENERAL_STAFF_ROLE_ID) ||
+    member.roles.cache.has(KIND_SMP_GENERAL_STAFF_ROLE_ID)
   ) {
     return 'General Staff';
   }
@@ -519,7 +523,13 @@ async function createTicket({
     const roles = await guild.roles.fetch();
     const staffRoles = [...new Set(STAFF_ROLE_IDS.map(id => id.trim()))]
       .filter(id => id !== guild.id && roles.has(id));
-    const permittedRoles = new Set(allowedRoles.map(id => id.trim()));
+    // General Staff can view and reply in every support ticket, including
+    // tickets routed to selected staff members. Other staff roles remain
+    // governed by the ticket type and selected-role settings.
+    const permittedRoles = new Set([
+      ...allowedRoles.map(id => id.trim()),
+      KIND_SMP_GENERAL_STAFF_ROLE_ID,
+    ]);
     if (type === 'all_staff' && !staffRoles.some(id => permittedRoles.has(id))) {
       return { success: false, message: '❌ No valid support staff roles are configured. Please contact an owner.' };
     }

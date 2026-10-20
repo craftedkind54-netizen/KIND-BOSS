@@ -9,6 +9,7 @@ const { reversibleStrikeAmount } = require('./strikeAppealPolicy');
 const { createStaffCommandEmbed } = require('./staffAudit');
 const { createActivePlayerGoal } = require('./activePlayerGoal');
 const { createActiveGoalCard, CARD_VERSION } = require('./activeGoalCard');
+const { strikeStaffRoleIds, canManageStrikes } = require('./strikeStaffAccess');
 const {
   Client, GatewayIntentBits, Events, EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
@@ -44,7 +45,11 @@ const STAFF_AUDIT_CHANNEL_ID = process.env.STAFF_AUDIT_CHANNEL_ID || '1561291135
 const ACTIVE_GOAL_PROGRESS_CHANNEL_ID = process.env.ACTIVE_GOAL_PROGRESS_CHANNEL_ID || '1561320960135659520';
 const ACTIVE_GOAL_MANAGEMENT_CHANNEL_ID = process.env.ACTIVE_GOAL_MANAGEMENT_CHANNEL_ID || '1561323169862783086';
 const ACTIVE_GOAL_ANNOUNCEMENTS_CHANNEL_ID = process.env.ACTIVE_GOAL_ANNOUNCEMENTS_CHANNEL_ID || process.env.ANNOUNCEMENTS_CHANNEL_ID || '1555825214045163520';
-const STAFF_ROLE_IDS = [process.env.OWNER_ROLE_ID || '1555827222688829441', process.env.SENIOR_STAFF_ROLE_ID || '1555839917815238736', process.env.GENERAL_STAFF_ROLE_ID || '1555840026607362099'];
+const STAFF_ROLE_IDS = strikeStaffRoleIds({
+  ownerRoleId: process.env.OWNER_ROLE_ID || '1555827222688829441',
+  seniorStaffRoleId: process.env.SENIOR_STAFF_ROLE_ID || '1555839917815238736',
+  generalStaffRoleId: process.env.GENERAL_STAFF_ROLE_ID || '1555840026607362099',
+});
 const BEDROCK_PREFIX = '.';
 
 
@@ -518,7 +523,7 @@ app.post(['/api/v1/strikes/action','/api/v1/strikes/propose'],async(req,res)=>{
 });
 app.listen(PORT,'0.0.0.0',()=>console.log(`KIND BOSS Strikes API listening on ${PORT}`));
 
-function managementEmbed(){return new EmbedBuilder().setTitle('KIND SMP Strike Management').setDescription('Staff can add strikes, remove strikes, or view the current active-strike list. Minecraft and Discord use the same Railway database.');}
+function managementEmbed(){return new EmbedBuilder().setTitle('KIND SMP Strike Management').setDescription('General Staff and Senior Staff can propose strike additions or removals and view the active-strike list. Changes take effect only after the Owner approves them. Minecraft and Discord use the same Railway database.');}
 function managementRows(){return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('strike:add').setLabel('Add Strikes').setStyle(ButtonStyle.Danger),new ButtonBuilder().setCustomId('strike:remove').setLabel('Remove Strikes').setStyle(ButtonStyle.Success),new ButtonBuilder().setCustomId('strike:view').setLabel('View Active Strikes').setStyle(ButtonStyle.Secondary))];}
 async function ensurePanel(){
   const ch=await client.channels.fetch(STRIKE_MANAGEMENT_CHANNEL_ID);
@@ -537,7 +542,7 @@ async function ensurePanel(){
   else await m.edit({embeds:[managementEmbed()],components:managementRows()});
   db.prepare(`INSERT INTO app_state(key,value) VALUES('panel_message_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(m.id);
 }
-function allowed(i){return i.guildId===GUILD_ID && STAFF_ROLE_IDS.some(id => i.member?.roles?.cache?.has(id));}
+function allowed(i){return canManageStrikes(i,{guildId:GUILD_ID,roleIds:STAFF_ROLE_IDS});}
 function owner(i){return i.guildId===GUILD_ID && i.member?.roles?.cache?.has(OWNER_ROLE_ID);}
 const PAGE_SIZE = 25;
 const allPlayers = () => db.prepare(`

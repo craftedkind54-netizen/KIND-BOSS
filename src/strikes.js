@@ -10,6 +10,7 @@ const { createStaffCommandEmbed } = require('./staffAudit');
 const { createActivePlayerGoal } = require('./activePlayerGoal');
 const { createActiveGoalCard, CARD_VERSION } = require('./activeGoalCard');
 const { strikeStaffRoleIds, canManageStrikes } = require('./strikeStaffAccess');
+const { formatApprovedStrikeNotice } = require('./strikeNotice');
 const {
   Client, GatewayIntentBits, Events, EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
@@ -37,6 +38,7 @@ const KIND_BRIDGE_DB_PATHS = [
 ].filter(Boolean);
 const GUILD_ID = process.env.GUILD_ID || '1555704317552361563';
 const STRIKE_LOG_CHANNEL_ID = process.env.STRIKE_LOG_CHANNEL_ID || '1555840868693442640';
+const STRIKE_PLAYER_NOTICE_CHANNEL_ID = process.env.STRIKE_PLAYER_NOTICE_CHANNEL_ID || '1555840868693442640';
 const STRIKE_MANAGEMENT_CHANNEL_ID = process.env.STRIKE_MANAGEMENT_CHANNEL_ID || '1555840868693442640';
 let strikeApprovalChannelId = process.env.STRIKE_APPROVAL_CHANNEL_ID || '';
 const OWNER_ROLE_ID = process.env.OWNER_ROLE_ID || '1555827222688829441';
@@ -268,6 +270,11 @@ async function syncActiveEntry(uuid){
  const map=db.prepare(`SELECT message_id FROM discord_active_messages WHERE player_uuid=?`).get(uuid);
  if(p.total<=0){if(map){const m=await channel.messages.fetch(map.message_id).catch(()=>null);if(m)await m.delete().catch(()=>{});db.prepare(`DELETE FROM discord_active_messages WHERE player_uuid=?`).run(uuid);}return;}
  let m=map?await channel.messages.fetch(map.message_id).catch(()=>null):null; if(m)await m.edit({embeds:[activeEmbed(p)],components:activeRows(uuid)}); else {m=await channel.send({embeds:[activeEmbed(p)],components:activeRows(uuid)});db.prepare(`INSERT INTO discord_active_messages(player_uuid,message_id,updated_at) VALUES(?,?,?) ON CONFLICT(player_uuid) DO UPDATE SET message_id=excluded.message_id,updated_at=excluded.updated_at`).run(uuid,m.id,new Date().toISOString());}
+}
+async function publishApprovedStrikeNotice(proposal,result){
+ const channel=await client.channels.fetch(STRIKE_PLAYER_NOTICE_CHANNEL_ID).catch(()=>null);
+ if(!channel?.isTextBased())throw new Error(`Player strike notice channel ${STRIKE_PLAYER_NOTICE_CHANNEL_ID} is unavailable`);
+ await channel.send({content:formatApprovedStrikeNotice(proposal,result),allowedMentions:{parse:[]}});
 }
 async function syncAll(){for(const p of activePlayers())await syncActiveEntry(p.uuid); const rows=db.prepare(`SELECT player_uuid FROM discord_active_messages`).all();for(const r of rows){const t=getTotal.get(r.player_uuid);if(!t||t.total<=0)await syncActiveEntry(r.player_uuid);}}
 
@@ -752,6 +759,7 @@ client.on(Events.InteractionCreate, async i => {
       if (decision==='approve-proposal') {
         const {proposal,result}=approveProposal(id,`${i.user.tag} (${i.user.id})`);
         await syncActiveEntry(proposal.player_uuid).catch(console.error);
+        await publishApprovedStrikeNotice(proposal,result).catch(error=>console.error('Could not publish approved strike notice:',error));
         const punishment=result.punishment?` Punishment: ${result.punishment.type} for ${result.punishment.duration}.`:'';
         await i.message.edit({embeds:[EmbedBuilder.from(i.message.embeds[0]).setColor(0x22c55e)],components:[],content:`Approved by <@${i.user.id}> · ${proposal.action} ${result.appliedAmount} strike(s) for **${proposal.username}**. New total: **${result.newTotal}**.${punishment}`,allowedMentions:{parse:[]}});
         return i.reply({content:`Approved. **${proposal.username}** now has ${result.newTotal} strike(s).${punishment}`,flags:MessageFlags.Ephemeral});

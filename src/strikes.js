@@ -8,11 +8,11 @@ const { punishmentFor, projectedTotal } = require('./strikePolicy');
 const { reversibleStrikeAmount } = require('./strikeAppealPolicy');
 const { createStaffCommandEmbed } = require('./staffAudit');
 const { createActivePlayerGoal } = require('./activePlayerGoal');
-const { createActiveGoalCard, CARD_VERSION } = require('./activeGoalCard');
+const { buildActiveGoalPanel } = require('./activeGoalPresentation');
 const { strikeStaffRoleIds, canManageStrikes } = require('./strikeStaffAccess');
 const { formatApprovedStrikeNotice } = require('./strikeNotice');
 const {
-  Client, GatewayIntentBits, Events, EmbedBuilder, AttachmentBuilder, ActionRowBuilder, ButtonBuilder,
+  Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
   StringSelectMenuBuilder, ChannelType, PermissionFlagsBits
 } = require('discord.js');
@@ -289,18 +289,13 @@ function activeGoalSettingsEmbed(){
     .addFields({name:'Current goal',value:`${g.targetPlayers} players · ${Math.round(g.requiredSeconds/60)} minutes per day`,inline:true},{name:'Current prize',value:g.prize||'No prize set',inline:true},{name:'Timezone',value:g.timezone,inline:true});
 }
 function activeGoalSettingsRows(){return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('activegoal:set').setLabel('Set Active Goal').setStyle(ButtonStyle.Primary))];}
-function activeGoalProgressEmbed(g=activePlayerGoal.snapshot(),{attachCard=true,imageUrl=null}={}){
-  const filename='kind-smp-weekly-player-goal.png';
-  const file=attachCard?new AttachmentBuilder(createActiveGoalCard(g),{name:filename}):null;
-  const duration=formatGoalDuration(g.requiredSeconds);
-  const averageCoverage=g.averageCoverageSeconds<60?`${Math.round(g.averageCoverageSeconds)}s`:formatGoalDuration(g.averageCoverageSeconds);
-  const weeklyAverage=g.averageOnlinePlayers==null?'collecting samples':`${g.averageOnlinePlayers.toFixed(1)} players · ${averageCoverage} tracked`;
-  const embed=new EmbedBuilder().setColor(0x35c5b5)
-    .setTitle('🏆 KIND SMP - Weekly Player Goal')
-    .setDescription(`**${g.targetPlayers} players** for **${duration} each day**, for **7 days in a row** · tracked **24/7**\nToday ${formatGoalDuration(g.secondsToday)} / ${formatGoalDuration(g.requiredSeconds)} · Streak ${g.streak} / 7 days · Prize: ${g.prize||'not set'}\nPast 7-day average: **${weeklyAverage}**`)
-    .setImage(imageUrl||`attachment://${filename}`)
-    .setFooter({text:`Timer only counts while the target is met · ${g.timezone}`});
-  return {embed,files:file?[file]:[]};
+function activeGoalProgressEmbed(g=activePlayerGoal.snapshot()){
+  const panel=buildActiveGoalPanel(g);
+  return new EmbedBuilder().setColor(0x35c5b5)
+    .setTitle(panel.title)
+    .setDescription(panel.description)
+    .addFields(panel.fields)
+    .setFooter({text:panel.footer});
 }
 async function upsertGoalMessage(channelId,key,embed,components=[],files=[]){
   const channel=await client.channels.fetch(channelId).catch(()=>null);
@@ -308,12 +303,14 @@ async function upsertGoalMessage(channelId,key,embed,components=[],files=[]){
   const embeds=Array.isArray(embed)?embed:[embed];
   const title=embeds[0]?.data.title;
   const recent=await channel.messages.fetch({limit:100}).catch(()=>null);
-  const matches=recent?[...recent.values()].filter(m=>m.author?.id===client.user.id&&m.embeds?.some(e=>e.title===title)):[];
+  const matches=recent?[...recent.values()].filter(m=>m.author?.id===client.user.id&&m.embeds?.some(e=>
+    e.title===title||(title==='🏆 KIND SMP · ACTIVE PLAYER GOAL'&&e.title==='🏆 KIND SMP - Weekly Player Goal'))):[];
   matches.sort((a,b)=>b.createdTimestamp-a.createdTimestamp);
   let message=matches[0]||null;
   for(const duplicate of matches.slice(1))await duplicate.delete().catch(()=>{});
   const payload={embeds,components};
   if(files.length){payload.files=files;payload.attachments=[];}
+  else if(message?.attachments?.size)payload.attachments=[];
   if(message)await message.edit(payload);
   else message=await channel.send(payload);
   db.prepare('INSERT INTO app_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,message.id);
@@ -332,20 +329,8 @@ async function refreshActiveGoalProgress(force=false){
     const g=activePlayerGoal.snapshot();
     const channel=await client.channels.fetch(ACTIVE_GOAL_PROGRESS_CHANNEL_ID).catch(()=>null);
     if(!channel?.isTextBased())throw new Error(`Active goal channel ${ACTIVE_GOAL_PROGRESS_CHANNEL_ID} is unavailable`);
-    const recent=await channel.messages.fetch({limit:100}).catch(()=>null);
-    const matches=recent?[...recent.values()].filter(m=>m.author?.id===client.user.id&&m.embeds?.some(e=>e.title==='🏆 KIND SMP - Weekly Player Goal')):[];
-    matches.sort((a,b)=>b.createdTimestamp-a.createdTimestamp);
-    const current=matches[0]||null;
-    const filename='kind-smp-weekly-player-goal.png';
-    const existingImage=current?.embeds?.find(e=>e.title==='🏆 KIND SMP - Weekly Player Goal')?.image?.url;
-    const hasAttachment=current?.attachments?.some(attachment=>attachment.name===filename);
-    const countSignature=`${CARD_VERSION}|${g.targetPlayers}|${g.requiredSeconds}|${g.prize||''}|${g.sampleFresh?g.onlinePlayers:'waiting'}|${g.secondsToday}|${g.streak}`;
-    const previous=db.prepare("SELECT value FROM app_state WHERE key='active_goal_card_state'").get()?.value;
-    const attachCard=!current||!existingImage||!hasAttachment||previous!==countSignature;
-    const panel=activeGoalProgressEmbed(g,{attachCard,imageUrl:attachCard?null:existingImage});
-    await upsertGoalMessage(ACTIVE_GOAL_PROGRESS_CHANNEL_ID,'active_goal_progress_message_id',panel.embed,[],panel.files);
-    if(attachCard)db.prepare(`INSERT INTO app_state(key,value) VALUES('active_goal_card_state',?)
-      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(countSignature);
+    const panel=activeGoalProgressEmbed(g);
+    await upsertGoalMessage(ACTIVE_GOAL_PROGRESS_CHANNEL_ID,'active_goal_progress_message_id',panel);
   }
   catch(error){console.error('Active player goal progress update failed:',error.message);}
 }

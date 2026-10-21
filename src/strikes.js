@@ -304,7 +304,9 @@ async function upsertGoalMessage(channelId,key,embed,components=[],files=[]){
   const title=embeds[0]?.data.title;
   const recent=await channel.messages.fetch({limit:100}).catch(()=>null);
   const matches=recent?[...recent.values()].filter(m=>m.author?.id===client.user.id&&m.embeds?.some(e=>
-    e.title===title||(title==='🏆 KIND SMP · ACTIVE PLAYER GOAL'&&e.title==='🏆 KIND SMP - Weekly Player Goal'))):[];
+    e.title===title||(title==='🏆 KIND SMP | WEEKLY PLAYER GOAL'&&[
+      '🏆 KIND SMP · ACTIVE PLAYER GOAL','🏆 KIND SMP - Weekly Player Goal'
+    ].includes(e.title)))):[];
   matches.sort((a,b)=>b.createdTimestamp-a.createdTimestamp);
   let message=matches[0]||null;
   for(const duplicate of matches.slice(1))await duplicate.delete().catch(()=>{});

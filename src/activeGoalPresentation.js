@@ -16,28 +16,28 @@ function progressBar(current, total, width = 12) {
 
 function buildActiveGoalPanel(goal) {
   const duration = formatDuration(goal.requiredSeconds);
-  const online = goal.sampleFresh ? `${goal.onlinePlayers}/${goal.targetPlayers}` : `—/${goal.targetPlayers}`;
+  const enoughPlayers = goal.sampleFresh && goal.onlinePlayers >= goal.targetPlayers;
+  const online = goal.sampleFresh ? `${goal.onlinePlayers} / ${goal.targetPlayers} players` : null;
   const onlineStatus = goal.sampleFresh
-    ? `**${online} players**\n${progressBar(goal.onlinePlayers, goal.targetPlayers)}`
-    : `Waiting for Minecraft server data\n${progressBar(0, goal.targetPlayers)}`;
-  const today = `${formatDuration(goal.secondsToday)} / ${duration}`;
-  const todayStatus = `**${today}**\n${progressBar(goal.secondsToday, goal.requiredSeconds)}`;
+    ? `**${online}**\n${enoughPlayers ? '✅ Target reached' : `Need ${goal.targetPlayers - goal.onlinePlayers} more to start the timer`}\n${progressBar(goal.onlinePlayers, goal.targetPlayers)}`
+    : 'Waiting for live player count';
+  const todayStatus = `**${formatDuration(goal.secondsToday)} / ${duration}**\n${progressBar(goal.secondsToday, goal.requiredSeconds)}\n${goal.dayQualified ? '✅ Daily goal complete' : enoughPlayers ? '🟢 Timer is counting' : goal.sampleFresh ? `⏸ Waiting for ${goal.targetPlayers} players online together` : 'Waiting for live player count'}`;
   const streakStatus = `**${goal.streak} / 7 days**\n${progressBar(goal.streak, 7)}`;
   const averageStatus = goal.averageOnlinePlayers == null
     ? 'Collecting samples'
     : `**${goal.averageOnlinePlayers.toFixed(1)} players**\n${formatDuration(goal.averageCoverageSeconds)} tracked`;
 
   return {
-    title: '🏆 KIND SMP · ACTIVE PLAYER GOAL',
-    description: `Keep at least **${goal.targetPlayers} players** on the tab list at the same time for **${duration} each day**. Reach the goal **7 days in a row**. Tracking runs **24/7**.`,
+    title: '🏆 KIND SMP | WEEKLY PLAYER GOAL',
+    description: `**Goal:** ${goal.targetPlayers} players online together for **${duration} each day**, for **7 days in a row**.\nThe tracker runs 24/7. Today's timer only counts while enough players are online.`,
     fields: [
       { name: '👥 Players online now', value: onlineStatus, inline: true },
       { name: '⏱ Today', value: todayStatus, inline: true },
       { name: '🔥 Weekly streak', value: streakStatus, inline: true },
-      { name: '📊 Past 7-day average', value: averageStatus, inline: true },
+      { name: '📊 Past 7-day average', value: averageStatus, inline: false },
       { name: '🎁 Prize', value: goal.prize || 'No prize has been set yet.', inline: false }
     ],
-    footer: `Timer counts only while the player target is met · ${goal.timezone}`
+    footer: `Timezone: ${goal.timezone}`
   };
 }
 

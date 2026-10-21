@@ -31,6 +31,38 @@ test('renders the current online count into the image instead of leaving the pla
   assert.notDeepEqual(targetReached, fourOnline);
 });
 
+test('renders the configured player target over the old baked-in target', () => {
+  const defaultGoal = decodeRgbPng(createActiveGoalCard(sampleGoal));
+  const updatedGoal = decodeRgbPng(createActiveGoalCard({ ...sampleGoal, targetPlayers: 10 }));
+  let changed = 0;
+  for (let y = 0; y < defaultGoal.height; y++) for (let x = 0; x < defaultGoal.width; x++) {
+    const offset = (y * defaultGoal.width + x) * 3;
+    const differs = defaultGoal.pixels[offset] !== updatedGoal.pixels[offset]
+      || defaultGoal.pixels[offset + 1] !== updatedGoal.pixels[offset + 1]
+      || defaultGoal.pixels[offset + 2] !== updatedGoal.pixels[offset + 2];
+    if (!differs) continue;
+    changed++;
+    assert.ok(x >= 251 && x < 329 && y >= 306 && y < 372, `unexpected change at ${x},${y}`);
+  }
+  assert.ok(changed > 0, 'expected the target number to change');
+});
+
+test('renders the configured prize over the old baked-in prize', () => {
+  const oldPrize = decodeRgbPng(createActiveGoalCard(sampleGoal));
+  const newPrize = decodeRgbPng(createActiveGoalCard({ ...sampleGoal, prize: 'Lava casting rule will be removed' }));
+  let changed = 0;
+  for (let y = 0; y < oldPrize.height; y++) for (let x = 0; x < oldPrize.width; x++) {
+    const offset = (y * oldPrize.width + x) * 3;
+    const differs = oldPrize.pixels[offset] !== newPrize.pixels[offset]
+      || oldPrize.pixels[offset + 1] !== newPrize.pixels[offset + 1]
+      || oldPrize.pixels[offset + 2] !== newPrize.pixels[offset + 2];
+    if (!differs) continue;
+    changed++;
+    assert.ok(x >= 399 && x < 1517 && y >= 772 && y < 842, `unexpected change at ${x},${y}`);
+  }
+  assert.ok(changed > 0, 'expected the prize text to change');
+});
+
 test('keeps the artwork unchanged when only the seven-day average changes', () => {
   const withoutAverage = createActiveGoalCard({ ...sampleGoal, onlinePlayers: 5, sampleFresh: true });
   const withAverage = createActiveGoalCard({ ...sampleGoal, onlinePlayers: 5, sampleFresh: true, averageOnlinePlayers: 4.6 });

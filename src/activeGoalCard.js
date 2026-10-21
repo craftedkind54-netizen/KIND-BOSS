@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
 
-const CARD_VERSION = 3;
+const CARD_VERSION = 4;
 const REFERENCE_CARD = fs.readFileSync(path.join(__dirname, 'assets', 'active-goal-reference-v2.png'));
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const FONT = {
@@ -28,6 +28,10 @@ const FONT = {
   'Y': ['10001','10001','01010','00100','00100','00100','00100'], 'Z': ['11111','00001','00010','00100','01000','10000','11111'],
   '%': ['11001','11010','00100','01000','10110','00110','00000'],
   '/': ['00001','00010','00010','00100','01000','01000','10000'], '-': ['00000','00000','00000','11111','00000','00000','00000'],
+  '.': ['00000','00000','00000','00000','00000','00110','00110'], ',': ['00000','00000','00000','00000','00110','00110','00100'],
+  ':': ['00000','00110','00110','00000','00110','00110','00000'], '!': ['00100','00100','00100','00100','00100','00000','00100'],
+  '?': ['01110','10001','00001','00010','00100','00000','00100'], '+': ['00000','00100','00100','11111','00100','00100','00000'],
+  "'": ['00100','00100','00000','00000','00000','00000','00000'],
   ' ': ['00000','00000','00000','00000','00000','00000','00000']
 };
 
@@ -99,6 +103,20 @@ function paintRect(image, x, y, width, height, color, alpha = 1) {
   }
 }
 
+function restoreHorizontalBlend(image, original, x, y, width, height) {
+  const startX = Math.max(1, Math.floor(x)), endX = Math.min(image.width - 1, Math.ceil(x + width));
+  for (let py = Math.max(0, Math.floor(y)); py < Math.min(image.height, Math.ceil(y + height)); py++) {
+    const leftOffset = (py * image.width + startX - 1) * 3;
+    const rightOffset = (py * image.width + endX) * 3;
+    for (let px = startX; px < endX; px++) {
+      const amount = (px - startX + 1) / (endX - startX + 1), offset = (py * image.width + px) * 3;
+      for (let channel = 0; channel < 3; channel++) {
+        image.pixels[offset + channel] = Math.round(original.pixels[leftOffset + channel] * (1 - amount) + original.pixels[rightOffset + channel] * amount);
+      }
+    }
+  }
+}
+
 function drawText(image, value, x, y, scale, color) {
   let cursorX = x;
   for (const character of String(value).toUpperCase()) {
@@ -110,13 +128,55 @@ function drawText(image, value, x, y, scale, color) {
   }
 }
 
+function wrapPrize(value, maxChars = 45, maxLines = 2) {
+  const text = String(value || 'NO PRIZE SET').trim().replace(/\s+/g, ' ').toUpperCase();
+  const words = text.split(' ');
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    const parts = word.match(new RegExp(`.{1,${maxChars}}`, 'g')) || [''];
+    for (const part of parts) {
+      const candidate = line ? `${line} ${part}` : part;
+      if (candidate.length > maxChars && line) {
+        lines.push(line);
+        line = part;
+      } else line = candidate;
+      if (lines.length === maxLines) break;
+    }
+    if (lines.length === maxLines) break;
+  }
+  if (line && lines.length < maxLines) lines.push(line);
+  const joined = lines.join(' ');
+  if (joined.length < text.length && lines.length) {
+    const last = lines.length - 1;
+    lines[last] = `${lines[last].slice(0, maxChars - 1).trimEnd()}.`;
+  }
+  return lines.length ? lines : ['NO PRIZE SET'];
+}
+
 function createActiveGoalCard(goal) {
   const image = decodeRgbPng(REFERENCE_CARD);
+  const original = { width: image.width, height: image.height, pixels: Buffer.from(image.pixels) };
   const target = Math.max(1, Number(goal.targetPlayers) || 1);
   const count = goal.sampleFresh ? Math.max(0, Number(goal.onlinePlayers) || 0) : null;
   const label = count === null ? 'WAITING' : `${count} / ${target}`;
 
-  // Keep all artwork fixed; only replace the player-count readout and meter.
+  // The reference artwork has a baked-in target of 15. Replace that number
+  // from the live settings so the card always agrees with the Discord text.
+  restoreHorizontalBlend(image, original, 251, 306, 66, 66);
+  const targetText = String(target);
+  const targetScale = Math.min(7, Math.max(3, Math.floor(58 / (targetText.length * 6))));
+  drawText(image, targetText, 260, 317, targetScale, [216, 166, 255]);
+
+  // The prize line is also baked into the background; draw the saved prize
+  // over it while keeping the scenic artwork visible around the new text.
+  const prizeLines = wrapPrize(goal.prize);
+  const prizeScale = prizeLines.length > 1 ? 4 : Math.min(5, Math.max(3, Math.floor(1085 / (prizeLines[0].length * 6))));
+  const prizeWidth = Math.min(1110, Math.max(430, Math.max(...prizeLines.map(line => line.length)) * prizeScale * 6 + 28));
+  paintRect(image, 405, 776, prizeWidth, 58, [16, 15, 23]);
+  prizeLines.forEach((line, index) => drawText(image, line, 414, 782 + index * 32, prizeScale, [246, 241, 255]));
+
+  // Keep all other artwork fixed; only live settings and progress are redrawn.
   // The larger purple bitmap text stays legible when Discord scales the image down.
   paintRect(image, 235, 482, 365, 62, [23, 14, 33]);
   const scale = Math.min(8, Math.max(4, Math.floor(350 / (label.length * 6))));

@@ -1,6 +1,6 @@
 'use strict';
 
-const DEFAULTS = Object.freeze({ targetPlayers: 5, requiredSeconds: 2 * 60 * 60, prize: '', timezone: 'Pacific/Honolulu' });
+const DEFAULTS = Object.freeze({ targetPlayers: 15, requiredSeconds: 2 * 60 * 60, prize: '', timezone: 'Pacific/Honolulu' });
 const MAX_SAMPLE_GAP_SECONDS = 90;
 const AVERAGE_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 
@@ -57,6 +57,20 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
       db.prepare('DELETE FROM active_goal_days').run();
     }
     return settings;
+  }
+
+  function resetProgress() {
+    const state = readState();
+    state.lastSampleAt = null;
+    state.lastOnline = 0;
+    state.daySeconds = 0;
+    state.dayQualified = false;
+    state.streak = 0;
+    state.lastQualifiedDay = null;
+    state.currentDay = null;
+    state.activeDay = null;
+    writeState(state);
+    db.prepare('DELETE FROM active_goal_days').run();
   }
 
   function recordSample(onlinePlayers, timestamp = now()) {
@@ -148,7 +162,7 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
       averageWindowSeconds: AVERAGE_WINDOW_SECONDS };
   }
 
-  return { setGoal, recordSample, markOffline, snapshot };
+  return { setGoal, resetProgress, recordSample, markOffline, snapshot };
 }
 
 module.exports = { createActivePlayerGoal, DEFAULTS, MAX_SAMPLE_GAP_SECONDS, AVERAGE_WINDOW_SECONDS };

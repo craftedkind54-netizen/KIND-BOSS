@@ -13,6 +13,23 @@ function setup() {
   return { db, goal, setNow: value => { now = value; } };
 }
 
+test('fresh goal starts at 15 players and reset clears progress while preserving the prize', () => {
+  const { db, goal, setNow } = setup();
+  assert.equal(goal.snapshot().targetPlayers, 15);
+  goal.setGoal(15, 120, 'Updated community prize');
+  const start = Date.parse('2026-10-18T00:00:00Z');
+  setNow(start); goal.recordSample(15, start);
+  setNow(start + 60_000); goal.recordSample(15, start + 60_000);
+  goal.resetProgress();
+  const progress = goal.snapshot(start + 60_000);
+  assert.equal(progress.onlinePlayers, 0);
+  assert.equal(progress.secondsToday, 0);
+  assert.equal(progress.streak, 0);
+  assert.equal(progress.sampleFresh, false);
+  assert.equal(progress.prize, 'Updated community prize');
+  db.close();
+});
+
 test('counts consecutive qualified days and displays the owner-defined prize without applying it', () => {
   const { db, goal, setNow } = setup();
   goal.setGoal(15, 1, 'Owner will expand the border by 5,000 blocks');

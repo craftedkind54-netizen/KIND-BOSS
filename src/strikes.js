@@ -101,6 +101,13 @@ CREATE TABLE IF NOT EXISTS minecraft_staff_rank_actions (
 `);
 if (!strikeApprovalChannelId) strikeApprovalChannelId = db.prepare(`SELECT value FROM app_state WHERE key='strike_approval_channel_id'`).get()?.value || '';
 const activePlayerGoal = createActivePlayerGoal(db, { timezone: process.env.ACTIVE_GOAL_TIMEZONE || 'Pacific/Honolulu' });
+const activeGoalResetKey = 'active_goal_fresh_start_v1';
+if (!db.prepare('SELECT 1 FROM app_state WHERE key=?').get(activeGoalResetKey)) {
+  const savedPrize = activePlayerGoal.snapshot().prize;
+  activePlayerGoal.setGoal(15, 120, savedPrize);
+  activePlayerGoal.resetProgress();
+  db.prepare('INSERT INTO app_state(key,value) VALUES(?,?)').run(activeGoalResetKey, new Date().toISOString());
+}
 db.exec(`CREATE TABLE IF NOT EXISTS active_goal_completion_announcements (
   local_day TEXT PRIMARY KEY,
   message_id TEXT NOT NULL,
@@ -304,8 +311,8 @@ async function upsertGoalMessage(channelId,key,embed,components=[],files=[]){
   const title=embeds[0]?.data.title;
   const recent=await channel.messages.fetch({limit:100}).catch(()=>null);
   const matches=recent?[...recent.values()].filter(m=>m.author?.id===client.user.id&&m.embeds?.some(e=>
-    e.title===title||(title==='🏆 KIND SMP | WEEKLY PLAYER GOAL'&&[
-      '🏆 KIND SMP · ACTIVE PLAYER GOAL','🏆 KIND SMP - Weekly Player Goal'
+      e.title===title||(title==='🏆 ACTIVE PLAYER GOAL'&&[
+      '🏆 KIND SMP | WEEKLY PLAYER GOAL','🏆 KIND SMP · ACTIVE PLAYER GOAL','🏆 KIND SMP - Weekly Player Goal'
     ].includes(e.title)))):[];
   matches.sort((a,b)=>b.createdTimestamp-a.createdTimestamp);
   let message=matches[0]||null;

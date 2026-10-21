@@ -17,18 +17,19 @@ const goal = {
   timezone: 'Pacific/Honolulu'
 };
 
-test('renders the live goal values as editable embed text without an image', () => {
+test('renders the clean text-only live goal panel without an image', () => {
   const panel = buildActiveGoalPanel(goal);
   const content = `${panel.title}\n${panel.description}\n${panel.fields.map(field => `${field.name}\n${field.value}`).join('\n')}\n${panel.footer}`;
   assert.match(content, /10 players/);
   assert.match(content, /5 \/ 10 players/);
-  assert.match(content, /30m \/ 2h 0m/);
-  assert.match(content, /Need 5 more to start the timer/);
-  assert.match(content, /timer only counts while enough players are online/);
+  assert.match(content, /30m \/ 2h/);
+  assert.match(content, /Need 5 more players/);
+  assert.match(content, /timer only counts while the player target is met/);
   assert.match(content, /3 \/ 7 days/);
-  assert.match(content, /4\.5 players/);
   assert.match(content, /Lava casting rule will be removed/);
-  assert.doesNotMatch(content, /attachment:|\.png|Border expands by 5k/);
+  assert.match(content, /ACTIVE PLAYER GOAL/);
+  assert.match(content, /WEEKLY STREAK/);
+  assert.doesNotMatch(content, /attachment:|\.png|Border expands by 5k|Past 7-day average/);
 });
 
 test('a changed target and prize appear in the next text panel', () => {
@@ -41,11 +42,11 @@ test('a changed target and prize appear in the next text panel', () => {
 
 test('shows waiting state when the Minecraft tab-list sample is stale', () => {
   const panel = buildActiveGoalPanel({ ...goal, sampleFresh: false });
-  assert.match(panel.fields.find(field => field.name === '👥 Players online now').value, /Waiting for live player count/);
+  assert.match(panel.fields.find(field => field.name === '👥 ACTIVE GOAL').value, /Waiting for live tab-list count/);
 });
 
 test('clearly shows when the player target is met and today is complete', () => {
   const panel = buildActiveGoalPanel({ ...goal, onlinePlayers: 10, dayQualified: true });
-  assert.match(panel.fields.find(field => field.name === '👥 Players online now').value, /Target reached/);
-  assert.match(panel.fields.find(field => field.name === '⏱ Today').value, /Daily goal complete/);
+  assert.match(panel.fields.find(field => field.name === '👥 ACTIVE GOAL').value, /Player target reached/);
+  assert.match(panel.fields.find(field => field.name === '⏱ TIMER').value, /Today complete/);
 });

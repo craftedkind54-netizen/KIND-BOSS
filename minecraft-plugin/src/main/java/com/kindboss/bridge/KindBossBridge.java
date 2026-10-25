@@ -15,6 +15,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.net.URI;
 import java.net.http.*;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -198,6 +200,7 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
             long id = jsonNumber(action, "id", -1L);
             long applicationId = jsonNumber(action, "applicationId", -1L);
             String username = jsonString(action, "username");
+            String minecraftUuid = jsonString(action, "minecraftUuid");
             String targetRank = jsonString(action, "targetRank");
             String minecraftRank = jsonString(action, "minecraftRank");
             String expectedRank = switch (targetRank == null ? "" : targetRank) {
@@ -209,18 +212,85 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
                 case "owner" -> "owner";
                 default -> null;
             };
-            boolean success = id > 0 && applicationId > 0 && username != null && username.matches("[A-Za-z0-9_]{1,16}")
-                    && expectedRank != null && expectedRank.equals(minecraftRank);
-            String error = success ? "" : "Invalid rank action payload";
-            if (success) {
-                String command = "rank set " + username + " " + minecraftRank;
-                success = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
-                if (!success) error = "CraftedCore did not accept /rank set";
-                else getLogger().info("Submitted approved staff rank " + minecraftRank + " for " + username + " (application #" + applicationId + ").");
+            boolean success = false;
+            String error = "Invalid rank action payload";
+            if (id > 0 && applicationId > 0 && username != null && username.matches("[A-Za-z0-9_]{1,16}")
+                    && minecraftUuid != null && expectedRank != null && expectedRank.equals(minecraftRank)) {
+                try {
+                    UUID targetUuid = UUID.fromString(minecraftUuid);
+                    UUID knownUuid = kindCoreKnownUuid(username);
+                    if (!targetUuid.equals(knownUuid)) {
+                        throw new IllegalStateException("Linked Minecraft UUID does not match KindCore's saved player record for " + username);
+                    }
+                    String command = "rank set " + username + " " + minecraftRank;
+                    if (!Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command)) {
+                        throw new IllegalStateException("KindCore did not dispatch /rank set");
+                    }
+                    String appliedRank = readKindCoreRank(targetUuid);
+                    success = minecraftRank.equals(appliedRank);
+                    if (!success) throw new IllegalStateException("KindCore still reports rank " + appliedRank + " after the promotion command");
+                    error = "";
+                    getLogger().info("Verified staff rank " + minecraftRank + " for " + username + " (application #" + applicationId + ").");
+                } catch (Exception e) {
+                    error = rootMessage(e);
+                    getLogger().warning("Could not apply staff rank for " + username + " (application #" + applicationId + "): " + error);
+                }
             }
             acknowledgeStaffRankAction(id, success, error);
         }
         staffRankPollBusy = false;
+    }
+
+    private UUID kindCoreKnownUuid(String username) throws Exception {
+        Plugin kindCore = requireKindCore();
+        Method known = findMethod(kindCore.getClass(), "known", String.class);
+        Object result = known.invoke(kindCore, username);
+        if (!(result instanceof UUID uuid)) throw new IllegalStateException("KindCore returned no UUID for " + username);
+        return uuid;
+    }
+
+    private String readKindCoreRank(UUID playerId) throws Exception {
+        Plugin kindCore = requireKindCore();
+        Field ranksField = findField(kindCore.getClass(), "ranks");
+        Object ranks = ranksField.get(kindCore);
+        if (ranks == null) throw new IllegalStateException("KindCore rank service is not ready");
+        Method rank = findMethod(ranks.getClass(), "rank", UUID.class);
+        Object result = rank.invoke(ranks, playerId);
+        if (!(result instanceof String value)) throw new IllegalStateException("KindCore returned no rank for " + playerId);
+        return value;
+    }
+
+    private Plugin requireKindCore() {
+        Plugin kindCore = Bukkit.getPluginManager().getPlugin("KindCore");
+        if (kindCore == null || !kindCore.isEnabled()) throw new IllegalStateException("KindCore is not enabled");
+        return kindCore;
+    }
+
+    private static Field findField(Class<?> type, String name) throws NoSuchFieldException {
+        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+            try {
+                Field field = current.getDeclaredField(name);
+                field.setAccessible(true);
+                return field;
+            } catch (NoSuchFieldException ignored) { }
+        }
+        throw new NoSuchFieldException(type.getName() + "." + name);
+    }
+
+    private static Method findMethod(Class<?> type, String name, Class<?>... parameters) throws NoSuchMethodException {
+        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+            try {
+                Method method = current.getDeclaredMethod(name, parameters);
+                method.setAccessible(true);
+                return method;
+            } catch (NoSuchMethodException ignored) { }
+        }
+        throw new NoSuchMethodException(type.getName() + "." + name);
+    }
+
+    private static String rootMessage(Exception error) {
+        Throwable cause = error.getCause() == null ? error : error.getCause();
+        return cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
     }
 
     private void acknowledgeStaffRankAction(long id, boolean success, String error) {

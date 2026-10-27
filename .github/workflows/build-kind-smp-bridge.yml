@@ -1,0 +1,35 @@
+name: Build Kind SMP bridge plugin
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'kindbridge/plugin/**'
+      - '.github/workflows/build-kind-smp-bridge.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'kindbridge/plugin/**'
+      - '.github/workflows/build-kind-smp-bridge.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: kindbridge/plugin/pom.xml
+      - name: Build bridge plugin
+        run: mvn --batch-mode --file kindbridge/plugin/pom.xml -DskipTests package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kind-smp-bridge-plugin
+          path: kindbridge/plugin/target/*.jar
+          if-no-files-found: error

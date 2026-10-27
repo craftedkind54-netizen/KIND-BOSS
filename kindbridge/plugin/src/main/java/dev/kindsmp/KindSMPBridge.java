@@ -91,6 +91,16 @@ public final class KindSMPBridge extends JavaPlugin {
                 });
                 result.addProperty("uuid",uuid.toString());
             }
+            case "unwhitelist" -> {
+                UUID uuid=Validation.uuid(data.get("uuid").getAsString());
+                String name=data.has("username") ? data.get("username").getAsString() : uuid.toString();
+                onMain(()-> {
+                    var player=Bukkit.getOfflinePlayer(uuid);
+                    player.setWhitelisted(false);
+                    if (player.isWhitelisted()) throw new IllegalStateException("Whitelist removal was not saved");
+                });
+                getLogger().info("Removed " + name + " (" + uuid + ") from the whitelist after their Discord departure.");
+            }
             case "creator" -> {
                 if (!getConfig().getBoolean("scoreboard-integration",true)) throw new IllegalStateException("Scoreboard integration disabled");
                 onMain(()->adapter.sync(data));

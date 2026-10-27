@@ -4,7 +4,8 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 export class Store {
-  constructor(path) {
+  constructor(path, { scoreboardIntegration = false } = {}) {
+    this.scoreboardIntegration = scoreboardIntegration;
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
@@ -53,10 +54,13 @@ export class Store {
   get(key, fallback = null) { const r = this.one('SELECT value FROM kv WHERE key=?', key); return r ? JSON.parse(r.value) : fallback; }
   set(key, value) { this.run('INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, JSON.stringify(value)); }
   queue(key, kind, payload) {
+    if (!this.scoreboardIntegration && ['creator', 'unlink'].includes(kind)) return;
     this.run('INSERT OR IGNORE INTO jobs(id,unique_key,kind,payload) VALUES (?,?,?,?)', randomUUID(), key, kind, JSON.stringify(payload));
   }
   lease(now = Date.now()) {
     return this.transaction(() => {
+      this.run("UPDATE jobs SET state='failed',lease=NULL WHERE state IN ('queued','leased') AND (instr(lower(coalesce(error,'')),'account not found')>0 OR instr(lower(coalesce(error,'')),'gamertag not found')>0)");
+      if (!this.scoreboardIntegration) this.run("UPDATE jobs SET state='cancelled',lease=NULL WHERE kind IN ('creator','unlink') AND state IN ('queued','leased')");
       const r = this.one("SELECT * FROM jobs WHERE (state='queued' AND until<=?) OR (state='leased' AND until<?) ORDER BY rowid LIMIT 1", now, now);
       if (!r) return null;
       const lease = randomUUID();
@@ -69,7 +73,9 @@ export class Store {
       const r = this.one("SELECT * FROM jobs WHERE id=? AND lease=? AND state='leased'", id, lease);
       if (!r) return false;
       const retryLimit = r.kind === 'whitelist' ? 60000 : 3600000;
-      this.run('UPDATE jobs SET state=?,result=?,error=?,until=? WHERE id=?', success ? 'done' : 'queued', JSON.stringify(result), String(error).slice(0, 300), now + Math.min(retryLimit, 15000 * 2 ** Math.min(r.attempts, 8)), id);
+      const errorText = String(error).slice(0, 300);
+      const terminal = /(?:account|gamertag) not found/i.test(errorText);
+      this.run('UPDATE jobs SET state=?,result=?,error=?,until=? WHERE id=?', success ? 'done' : terminal ? 'failed' : 'queued', JSON.stringify(result), errorText, now + Math.min(retryLimit, 15000 * 2 ** Math.min(r.attempts, 8)), id);
       if (success && r.kind === 'whitelist') {
         const payload = JSON.parse(r.payload);
         if (!/^[0-9a-f-]{36}$/i.test(result.uuid || '')) throw new Error('Missing resolved player UUID');

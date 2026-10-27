@@ -4,7 +4,7 @@ import {Store} from '../src/store.js';
 import {YouTube} from '../src/youtube.js';
 import {config} from '../src/config.js';
 function fixture(t) {
- const s=new Store(':memory:');t.after(()=>s.close());const yt=new YouTube(s,config({}));
+ const s=new Store(':memory:', {scoreboardIntegration:true});t.after(()=>s.close());const yt=new YouTube(s,config({}));
  for(const id of ['a','b']) s.run('INSERT INTO creators(user_id,channel_id,uuid,minecraft_name,data,verified_at) VALUES (?,?,?,?,?,?)',id,id,id,id,JSON.stringify({uploadPlaylistId:'UU'+id,likes:55}),1);
  return {s,yt};
 }

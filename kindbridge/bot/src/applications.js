@@ -13,6 +13,8 @@ export function validateApplication(a) {
 export function submit(store, userId, input, cooldown, now = Date.now()) {
   const a = validateApplication(input);
   return store.transaction(() => {
+    // Let an applicant correct a Minecraft name after a permanent lookup failure.
+    store.run("UPDATE applications SET state='superseded',notification_done=0 WHERE user_id=? AND state='approved' AND EXISTS (SELECT 1 FROM jobs WHERE kind='whitelist' AND state='failed' AND json_extract(payload,'$.applicationId')=applications.id AND (instr(lower(coalesce(error,'')),'account not found')>0 OR instr(lower(coalesce(error,'')),'gamertag not found')>0))", userId);
     if (store.one("SELECT id FROM applications WHERE user_id=? AND state IN ('pending','approved')", userId)) throw new Error('You already have an application awaiting review or whitelisting. Use /status.');
     const denied = store.one("SELECT decided FROM applications WHERE user_id=? AND state='rejected' ORDER BY decided DESC LIMIT 1", userId);
     if (denied && now < denied.decided + cooldown) throw new Error(`You can reapply <t:${Math.ceil((denied.decided + cooldown) / 1000)}:R>.`);

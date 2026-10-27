@@ -13,7 +13,7 @@ const input = overrides => ({ edition:'java', username:'KindPlayer', age:'13', r
 const uuid = '12345678-1234-1234-1234-123456789012';
 const channel = 'UC'+'a'.repeat(22);
 const video = 'a'.repeat(11);
-function store(t) { const s = new Store(':memory:'); t.after(()=>s.close()); return s; }
+function store(t) { const s = new Store(':memory:', { scoreboardIntegration:true }); t.after(()=>s.close()); return s; }
 function ready(s,user='u') { const id=submit(s,user,input(),86400000); decide(s,id,'staff',true); const j=s.lease(); s.ack(j.id,j.lease,true,{uuid}); return id; }
 test('Minimum age, rules, malformed ages and username injection are rejected',t=>{
   const s=store(t);
@@ -184,6 +184,27 @@ test('Failed whitelist lookup retries within a minute and does not block another
   s.ack(second.id,second.lease,true,{uuid},'',now+2);
   assert.equal(s.lease(now+59999),null);
   assert.equal(s.lease(now+60000).id,first.id);
+});
+
+test('Permanent missing-account failures stop retrying and let the applicant correct their account',t=>{
+  const s=store(t),now=Date.now();
+  const original=submit(s,'u',input({username:'WrongName'}),0,now);
+  decide(s,original,'staff',true,'',now);
+  const job=s.lease(now);
+  s.ack(job.id,job.lease,false,{},'Java Minecraft account not found',now);
+  assert.equal(s.one('SELECT state FROM jobs WHERE id=?',job.id).state,'failed');
+  assert.equal(s.lease(now+86400000),null);
+  const corrected=submit(s,'u',input({username:'CorrectName'}),0,now+1);
+  assert.equal(s.one('SELECT state FROM applications WHERE id=?',original).state,'superseded');
+  assert.equal(s.one('SELECT state FROM applications WHERE id=?',corrected).state,'pending');
+});
+
+test('Old queued unknown-account jobs are made terminal before another lease',t=>{
+  const s=store(t),id=submit(s,'u',input(),0),appJob=(()=>{decide(s,id,'staff',true);return s.lease();})();
+  s.ack(appJob.id,appJob.lease,false,{},'Java Minecraft account not found');
+  s.run("UPDATE jobs SET state='queued',until=0 WHERE id=?",appJob.id);
+  assert.equal(s.lease()?.id,undefined);
+  assert.equal(s.one('SELECT state FROM jobs WHERE id=?',appJob.id).state,'failed');
 });
 
 test('Members can reapply while their current account stays accepted until whitelisting succeeds',t=>{

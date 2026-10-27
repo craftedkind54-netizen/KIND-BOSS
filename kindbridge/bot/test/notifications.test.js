@@ -49,10 +49,10 @@ test('A failed recipient does not prevent delivery to another recipient',async t
   f.client.users.fetch=async id=>({send:async body=>{if(id==='member')throw {code:50007};f.sent.push(body);}});
   await f.n.maintenance();assert.equal(f.sent.length,1);
 });
-test('DM delivery succeeds even when staff-log maintenance fails',async t=>{
+test('DM delivery succeeds and staff-log maintenance failure is recorded without throwing',async t=>{
   const f=fixture(t);f.approve();f.ready();const {client,maintenance}=createDiscord(f.s,f.c,{});t.after(()=>client.destroy());
   client.isReady=()=>true;client.users.fetch=f.client.users.fetch;client.guilds.fetch=async()=>{throw new Error('Staff log unavailable');};
-  await assert.rejects(()=>maintenance(),/Staff log unavailable/);assert.equal(f.sent.length,1);assert.equal(f.app().dm_done,1);
+  await maintenance();assert.equal(f.sent.length,1);assert.equal(f.app().dm_done,1);assert.match(f.s.get('discordError'),/Staff log unavailable/);
 });
 test('/join sends only the requesting accepted member a private DM',async t=>{
   const f=fixture(t);f.approve();f.ready();const {client}=createDiscord(f.s,f.c,{});t.after(()=>client.destroy());client.users.fetch=f.client.users.fetch;

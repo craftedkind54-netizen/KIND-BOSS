@@ -17,7 +17,7 @@ Do not upload the original CreatorScoreboard JAR, a real `.env` file, database f
 1. Open the [Discord Developer Portal](https://discord.com/developers/applications), create **Kind SMP**, and open its Bot settings.
 2. Obtain the bot token and put it directly in Railway's `DISCORD_TOKEN` variable in the next step. Do not commit it to GitHub or share it in chat.
 3. Create a server-install invitation with the `bot` and `applications.commands` scopes.
-4. Give the bot **View Channels**, **Send Messages**, **Embed Links**, **Read Message History**, and **Manage Roles**. It does not require Administrator or privileged gateway intents.
+4. Give the bot **View Channels**, **Send Messages**, **Embed Links**, **Read Message History**, and **Manage Roles**. In Developer Portal → Bot, enable the privileged **Server Members Intent** so the bot can detect when a member leaves and revoke their Minecraft whitelist. It does not require Administrator.
 5. Invite it to server `1555704317552361563`.
 6. In Discord Server Settings → Roles, move the bot's role above **SMP Member** and **YouTuber**. Give your staff and yourself role `1555726622982668408`.
 7. Make form-log channel `1555723400008302763` private. Deny View Channel for `@everyone`; do not grant it to general member, YouTuber, or other public roles. Give access to staff and the bot. Review individual-member overrides too. The bot refuses to post form logs if `@everyone`, SMP Member, or YouTuber has access.

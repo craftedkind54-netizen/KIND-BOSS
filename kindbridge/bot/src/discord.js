@@ -1,7 +1,7 @@
 import { Client, GatewayIntentBits, MessageFlags, PermissionFlagsBits, SlashCommandBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, LabelBuilder,
   EmbedBuilder } from 'discord.js';
-import { submit, decide, joining } from './applications.js';
+import { submit, decide, joining, releaseMemberWhitelist } from './applications.js';
 import { quotaDay, channelTarget } from './youtube.js';
 import { createNotifications } from './notifications.js';
 import { isOwnedApplicationPanel } from './applicationPanelPolicy.js';
@@ -35,7 +35,7 @@ function applicationPanelBody(c) {
 const youtubeForm = () => form('application:youtube', 'Kind SMP application · 2 of 2', [['youtube', 'YouTube channel link (optional)', 200, false, false]]);
 
 export function createDiscord(store, c, yt, sharedClient = null) {
-  const client = sharedClient || new Client({ intents: [GatewayIntentBits.Guilds], allowedMentions: { parse: [] } });
+  const client = sharedClient || new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers], allowedMentions: { parse: [] } });
   const notifications = createNotifications(store, c, client);
   async function staff(i) {
     if (i.guildId !== c.guild) throw new Error('Use this command in the Kind SMP Discord server.');
@@ -53,6 +53,19 @@ export function createDiscord(store, c, yt, sharedClient = null) {
     }
     const nonce = key ? createHash('sha256').update(key).digest('hex').slice(0,24) : undefined;
     return channel.send({ ...body, ...(nonce ? {nonce, enforceNonce: true} : {}), allowedMentions: { parse: [] } });
+  }
+  async function removeReviewButtons(appId, sourceMessage = null) {
+    try {
+      const app = store.one('SELECT log_id FROM applications WHERE id=?', appId);
+      let message = sourceMessage;
+      if (!message && app?.log_id) {
+        const channel = await client.channels.fetch(c.log);
+        message = await channel.messages.fetch(app.log_id);
+      }
+      if (message) await message.edit({ components: [] });
+    } catch (e) {
+      if (e.code !== 10008) console.error('Could not remove application review buttons:', e.message);
+    }
   }
   const commands = [
     new SlashCommandBuilder().setName('setup').setDescription('Staff: post the Kind SMP application panel'),
@@ -87,6 +100,16 @@ export function createDiscord(store, c, yt, sharedClient = null) {
       }
       console.log('Kind SMP connected. Staff can run /setup.');
     } catch (e) { console.error('Discord command or application panel setup failed:', e.message); }
+  });
+  client.on('guildMemberRemove', member => {
+    if (member.guild.id !== c.guild) return;
+    try {
+      const result = releaseMemberWhitelist(store, member.id);
+      if (result.removed.length) console.log(`Queued Minecraft whitelist removal for Discord member ${member.id}: ${result.removed.join(', ')}`);
+      else if (result.cancelled > 0) console.log(`Cancelled ${result.cancelled} pending whitelist request(s) for Discord member ${member.id}.`);
+    } catch (e) {
+      console.error(`Could not process Discord departure for ${member.id}:`, e.message);
+    }
   });
   const starts = new Map();
   const userLocks = new Set();
@@ -145,9 +168,19 @@ export function createDiscord(store, c, yt, sharedClient = null) {
         store.run('DELETE FROM drafts WHERE user_id=?', i.user.id);
         return reply(`Application submitted to staff. Reference: ${appId.slice(0,8)}. Use /status for updates.`);
       }
-      if (id.startsWith('approve:')) { decide(store,id.slice(8),i.user.id,true); return reply('Approved. The whitelist request is saved with no expiry. If the SMP is running, the plugin will add this player automatically; if it is offline, processing resumes when it starts. No second approval is needed. An approval DM with the server address will be attempted shortly if the address is configured. A second welcome DM follows successful whitelisting. Use /resend-welcome to retry a member’s DM.'); }
+      if (id.startsWith('approve:')) {
+        const appId = id.slice(8);
+        decide(store,appId,i.user.id,true);
+        await removeReviewButtons(appId,i.message);
+        return reply('Approved. The whitelist request is saved with no expiry. If the SMP is running, the plugin will add this player automatically; if it is offline, processing resumes when it starts. No second approval is needed. An approval DM with the server address will be attempted shortly if the address is configured. A second welcome DM follows successful whitelisting. Use /resend-welcome to retry a member’s DM.');
+      }
       if (id.startsWith('reject:')) return i.showModal(form(`rejection:${id.slice(7)}`, 'Reason for rejecting', [['reason','Reason shown to the applicant',1000,true]]));
-      if (id.startsWith('rejection:')) { decide(store,id.slice(10),i.user.id,false,i.fields.getTextInputValue('reason')); return reply('Application rejected with your reason.'); }
+      if (id.startsWith('rejection:')) {
+        const appId = id.slice(10);
+        decide(store,appId,i.user.id,false,i.fields.getTextInputValue('reason'));
+        await removeReviewButtons(appId);
+        return reply('Application rejected with your reason.');
+      }
       if (id === 'join' || id === 'resend-welcome') {
         if (!i.deferred) await i.deferReply({flags:ephemeral});
         const userId = id === 'join' ? i.user.id : i.options.getUser('member',true).id;
@@ -233,7 +266,14 @@ export function createDiscord(store, c, yt, sharedClient = null) {
     }
     for (const app of store.all("SELECT * FROM applications WHERE state<>'pending' AND notification_done=0 AND log_id IS NOT NULL LIMIT 20")) {
       const ch = await client.channels.fetch(c.log);
-      try { const msg = await ch.messages.fetch(app.log_id); const embeds=msg.embeds.map(e=>EmbedBuilder.from(e).setFields(e.fields.map(f=>f.name.startsWith('YouTube') ? {...f,name:'YouTube channel (optional)'} : f))); await msg.edit({embeds,components:[],content:`${app.state === 'superseded' ? 'Replaced by a newer accepted account' : app.state === 'rejected' ? 'Rejected' : 'Approved'} by <@${app.reviewer}>${app.reason ? '\nReason: '+app.reason : app.state === 'superseded' ? '\nStaff: remove the old Minecraft whitelist entry if needed.' : app.state === 'ready' ? '\nWhitelisting completed by the Minecraft server.' : '\nWhitelist request saved with no expiry. Automatically processed when the SMP is running.'}`,allowedMentions:{parse:[]}}); }
+      try {
+        const msg = await ch.messages.fetch(app.log_id);
+        const embeds=msg.embeds.map(e=>EmbedBuilder.from(e).setFields(e.fields.map(f=>f.name.startsWith('YouTube') ? {...f,name:'YouTube channel (optional)'} : f)));
+        const status = app.state === 'left'
+          ? `Discord member left.\\n${app.reason || 'Minecraft whitelist removal requested.'}`
+          : `${app.state === 'superseded' ? 'Replaced by a newer accepted account' : app.state === 'rejected' ? 'Rejected' : 'Approved'} by <@${app.reviewer}>${app.reason ? '\\nReason: '+app.reason : app.state === 'superseded' ? '\\nStaff: remove the old Minecraft whitelist entry if needed.' : app.state === 'ready' ? '\\nWhitelisting completed by the Minecraft server.' : '\\nWhitelist request saved with no expiry. Automatically processed when the SMP is running.'}`;
+        await msg.edit({embeds,components:[],content:status,allowedMentions:{parse:[]}});
+      }
       catch (e) { if (e.code !== 10008) throw e; }
       store.run('UPDATE applications SET notification_done=1 WHERE id=? AND state=?',app.id,app.state);
     }

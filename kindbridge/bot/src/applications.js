@@ -34,6 +34,39 @@ export function decide(store, id, reviewer, approve, reason = '', now = Date.now
     if (approve) store.queue(`whitelist:${id}`, 'whitelist', { applicationId: id, edition: r.edition, username: r.username });
   });
 }
+/** Revoke stored Minecraft accounts and pending approvals when a Discord member leaves. */
+export function releaseMemberWhitelist(store, userId, now = Date.now()) {
+  return store.transaction(() => {
+    const rows = store.all("SELECT id,edition,username,state,uuid FROM applications WHERE user_id=? AND state IN ('pending','approved','ready','superseded') ORDER BY created DESC,rowid DESC", userId);
+    if (!rows.length) return { removed: [], cancelled: 0 };
+    const accounts = new Map();
+    let cancelled = 0;
+    for (const row of rows) {
+      const result = store.run("UPDATE jobs SET state='cancelled',lease=NULL,until=0 WHERE kind='whitelist' AND state IN ('queued','leased') AND json_extract(payload,'$.applicationId')=?", row.id);
+      cancelled += Number(result.changes || 0);
+      if (row.uuid && ['ready','superseded'].includes(row.state)) accounts.set(row.uuid, row);
+    }
+    const queued = [];
+    for (const [uuid, row] of accounts) {
+      // A Minecraft account can be reassigned after a prior application was superseded.
+      const stillAssigned = store.one("SELECT id FROM applications WHERE uuid=? AND user_id<>? AND state IN ('approved','ready') LIMIT 1", uuid, userId);
+      if (!stillAssigned) {
+        store.queue(`discord-left:${userId}:${uuid}:${now}`, 'unwhitelist', { uuid, username: row.username });
+        queued.push(`${row.edition}:${row.username}`);
+      }
+    }
+    for (const row of rows) {
+      const reason = row.uuid
+        ? accounts.has(row.uuid) && !queued.includes(`${row.edition}:${row.username}`)
+          ? 'Discord server membership ended; account remains assigned to another member.'
+          : 'Discord server membership ended; Minecraft whitelist removal queued.'
+        : 'Discord server membership ended; pending whitelist request cancelled.';
+      store.run("UPDATE applications SET state='left',reason=?,decided=?,notification_done=0 WHERE id=?", reason, now, row.id);
+    }
+    return { removed: queued, cancelled };
+  });
+}
+
 export function joining(c, whitelisted = true) {
   const lines = [whitelisted
     ? 'Welcome to Kind SMP! Your application is approved and your Minecraft account is whitelisted.'

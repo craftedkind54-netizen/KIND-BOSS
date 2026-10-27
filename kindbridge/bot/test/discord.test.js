@@ -11,10 +11,11 @@ function fixture(t,staffRole=false) {
   const {client}=createDiscord(s,c,{});
   t.after(async()=>{await client.destroy();s.close();});
   const responses=[];
+  const roleAdds=[];
   const i={guildId:c.guild,user:{id:'reviewer'},customId:`approve:${app}`,isChatInputCommand:()=>false,isButton:()=>true,isModalSubmit:()=>false,
-    guild:{members:{fetch:async()=>({roles:{cache:new Map(staffRole ? [[c.staffRoles[0],{}]] : [])}})}},
+    guild:{members:{fetch:async target=>{const userId=typeof target==='string'?target:target.user;return {roles:{cache:new Map(userId==='reviewer' && staffRole ? [[c.staffRoles[0],{}]] : []),add:async(role,reason)=>roleAdds.push({userId,role,reason})}};}}},
     deferReply:async()=>{i.deferred=true;},reply:async data=>{responses.push(data);i.replied=true;},editReply:async data=>responses.push(data)};
-  return {s,c,app,client,i,responses,handle:client.listeners('interactionCreate')[0]};
+  return {s,c,app,client,i,responses,roleAdds,handle:client.listeners('interactionCreate')[0]};
 }
 test('A non-staff member cannot approve even using a forged button ID',async t=>{
   const f=fixture(t,false); await f.handle(f.i);
@@ -26,8 +27,48 @@ test('A staff interaction queues whitelist work and refuses a second decision',a
   const f=fixture(t,true); await f.handle(f.i);
   assert.equal(f.s.one('SELECT state FROM applications').state,'approved');
   assert.equal(f.s.one('SELECT count(*) AS n FROM jobs').n,1);
+  assert.deepEqual(f.roleAdds,[{userId:'applicant',role:f.c.memberRole,reason:'Kind SMP application approved'}]);
+  assert.equal(f.s.one('SELECT role_done FROM applications').role_done,1);
   await f.handle(f.i);
   assert.match(f.responses.at(-1).content,/already reviewed/);
+});
+
+test('A foreign-authored application message cannot block status updates or role retries',async t=>{
+  const s=new Store(':memory:'),c=config({});
+  const app=submit(s,'applicant',{edition:'java',username:'KindPlayer',age:'13',rules:'yes',heard:'Friend',why:'Build together',youtube:''},c.cooldown);
+  s.run("UPDATE applications SET state='ready',reviewer='staff',log_id='legacy-message',notification_done=0 WHERE id=?",app);
+  let roleAdded=false; const posted=[];
+  const applicant={roles:{add:async()=>{roleAdded=true;}}};
+  const guild={members:{fetch:async()=>applicant},roles:{fetch:async()=>null}};
+  const oldMessage={embeds:[],edit:async()=>{const error=new Error('Cannot edit a message authored by another user');error.code=50005;throw error;}};
+  const channel={guildId:c.guild,guild,isTextBased:()=>true,send:async body=>{posted.push(body);return {id:'replacement-message'};},messages:{fetch:async()=>oldMessage}};
+  const fakeClient={isReady:()=>true,once:()=>{},on:()=>{},guilds:{fetch:async()=>guild},channels:{fetch:async()=>channel},users:{fetch:async()=>{throw new Error('unexpected DM');}}};
+  const {maintenance}=createDiscord(s,c,{},fakeClient);
+  try {
+    await maintenance();
+    assert.equal(roleAdded,true);
+    assert.equal(s.one('SELECT role_done FROM applications WHERE id=?',app).role_done,1);
+    assert.equal(s.one('SELECT log_id FROM applications WHERE id=?',app).log_id,'replacement-message');
+    assert.equal(s.one('SELECT notification_done FROM applications WHERE id=?',app).notification_done,1);
+    assert.match(posted[0].embeds[0].data.description,/Minecraft whitelist: complete/);
+  } finally { s.close(); }
+});
+
+test('Member role errors are saved and posted to the staff log',async t=>{
+  const s=new Store(':memory:'),c=config({});
+  const app=submit(s,'applicant',{edition:'java',username:'KindPlayer',age:'13',rules:'yes',heard:'Friend',why:'Build together',youtube:''},c.cooldown);
+  s.run("UPDATE applications SET state='approved',log_id='existing-message',notification_done=1 WHERE id=?",app);
+  const posted=[];
+  const guild={members:{fetch:async()=>({roles:{add:async()=>{const error=new Error('Missing Permissions');error.code=50013;throw error;}}})},roles:{fetch:async()=>null}};
+  const channel={guildId:c.guild,guild,isTextBased:()=>true,send:async body=>{posted.push(body);return {id:'staff-notice'};},messages:{fetch:async()=>({embeds:[],edit:async()=>{}})}};
+  const fakeClient={isReady:()=>true,once:()=>{},on:()=>{},guilds:{fetch:async()=>guild},channels:{fetch:async()=>channel},users:{fetch:async()=>{throw new Error('unexpected DM');}}};
+  const {maintenance}=createDiscord(s,c,{},fakeClient);
+  try {
+    await maintenance();
+    assert.equal(s.one('SELECT role_done FROM applications WHERE id=?',app).role_done,0);
+    assert.match(s.get('discordError'),/Discord 50013/);
+    assert.match(posted[0].content,/Move the bot role above SMP Members/);
+  } finally { s.close(); }
 });
 test('Staff rejection through the Discord modal requires a nonblank reason',async t=>{
   const f=fixture(t,true); f.i.customId=`rejection:${f.app}`; f.i.fields={getTextInputValue:()=> '   '};

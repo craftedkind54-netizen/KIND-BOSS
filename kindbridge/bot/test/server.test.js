@@ -7,7 +7,7 @@ import { config } from '../src/config.js';
 import { YouTube } from '../src/youtube.js';
 
 test('Bridge authentication, acknowledgement leases and signed WebSub callbacks',async t=>{
-  const s=new Store(':memory:'), c={...config({}),secret:'x'.repeat(48)},yt=new YouTube(s,c),http=server(s,c,yt);
+  const s=new Store(':memory:', {scoreboardIntegration:true}), c={...config({}),secret:'x'.repeat(48)},yt=new YouTube(s,c),http=server(s,c,yt);
   await new Promise(r=>http.listen(0,'127.0.0.1',r)); const base=`http://127.0.0.1:${http.address().port}`;
   t.after(async()=>{await new Promise(r=>http.close(r)); s.close();});
   assert.equal((await fetch(base+'/bridge/jobs')).status,401);

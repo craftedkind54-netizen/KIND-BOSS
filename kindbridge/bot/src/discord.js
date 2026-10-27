@@ -54,7 +54,37 @@ export function createDiscord(store, c, yt, sharedClient = null) {
     const nonce = key ? createHash('sha256').update(key).digest('hex').slice(0,24) : undefined;
     return channel.send({ ...body, ...(nonce ? {nonce, enforceNonce: true} : {}), allowedMentions: { parse: [] } });
   }
-  const commands = [
+  const uneditableMessageCodes = new Set(['10008', '50005', '50001', '50013']);
+  function applicationOutcome(app) {
+    if (app.state === 'rejected') return `Rejected by <@${app.reviewer}>${app.reason ? ': ' + app.reason : ''}`;
+    if (app.state === 'superseded') return 'Replaced by a newer accepted account. Staff: remove the previous Minecraft whitelist entry if needed.';
+    if (app.state === 'ready') return `Approved by <@${app.reviewer}>. Minecraft whitelist: complete.`;
+    return `Approved by <@${app.reviewer}>. Minecraft whitelist: pending; request is saved until the server processes it.`;
+  }
+  function applicationStatusBody(app) {
+    const embed = new EmbedBuilder().setColor(0x65b891)
+      .setTitle(`Application status · ${app.id.slice(0,8)}`)
+      .setDescription(`Applicant: <@${app.user_id}>\nMinecraft account: ${app.edition} · ${app.username}\n${applicationOutcome(app)}`);
+    if (app.state === 'rejected' && app.reason) embed.addFields({name:'Reason',value:app.reason});
+    return {content:`Application ${app.id.slice(0,8)} status for <@${app.user_id}>`, embeds:[embed], components:[], allowedMentions:{parse:[]}};
+  }
+  async function reportMemberRoleFailure(app, error, origin) {
+    const code = String(error.code || 'error');
+    const detail = code === '50013' ? 'Move the bot role above SMP Members and grant Manage Roles.' : 'Check the bot role and server permissions.';
+    const message = `Member role failed for application ${app.id.slice(0,8)} (Discord ${code}).`;
+    store.set('discordError', message + ' ' + detail);
+    console.error(message, error.message || error);
+    const key = `memberRoleFailureNotice:${app.id}`;
+    const prior = store.get(key, {});
+    if (prior.code === code && Date.now() - (prior.sentAt || 0) < 15 * 60 * 1000) return;
+    try {
+      await send(c.log, {content:`⚠️ ${message} Applicant: <@${app.user_id}>. ${detail} (while ${origin})`});
+      store.set(key, {code, sentAt:Date.now()});
+    } catch (postError) {
+      console.error(`Could not post member role failure for application ${app.id.slice(0,8)}:`, postError.message || postError);
+      store.set(key, {code, sentAt:Date.now()});
+    }
+  }  const commands = [
     new SlashCommandBuilder().setName('setup').setDescription('Staff: post the Kind SMP application panel'),
     new SlashCommandBuilder().setName('apply').setDescription('Apply to join Kind SMP or apply again with a new Minecraft account'),
     new SlashCommandBuilder().setName('join').setDescription('Privately DM me the server address and joining instructions'),
@@ -145,7 +175,18 @@ export function createDiscord(store, c, yt, sharedClient = null) {
         store.run('DELETE FROM drafts WHERE user_id=?', i.user.id);
         return reply(`Application submitted to staff. Reference: ${appId.slice(0,8)}. Use /status for updates.`);
       }
-      if (id.startsWith('approve:')) { decide(store,id.slice(8),i.user.id,true); return reply('Approved. The whitelist request is saved with no expiry. If the SMP is running, the plugin will add this player automatically; if it is offline, processing resumes when it starts. No second approval is needed. An approval DM with the server address will be attempted shortly if the address is configured. A second welcome DM follows successful whitelisting. Use /resend-welcome to retry a member’s DM.'); }
+      if (id.startsWith('approve:')) {
+        const applicationId = id.slice(8);
+        decide(store,applicationId,i.user.id,true);
+        const app = store.one('SELECT * FROM applications WHERE id=?',applicationId);
+        try {
+          const member = await i.guild.members.fetch(app.user_id);
+          await member.roles.add(c.memberRole,'Kind SMP application approved');
+          store.run('UPDATE applications SET role_done=1 WHERE id=?',app.id);
+          store.set(`memberRoleFailureNotice:${app.id}`,null);
+        } catch (error) { await reportMemberRoleFailure(app,error,'approving the application'); }
+        return reply('Approved. The SMP Members role was assigned or staff were notified if Discord refused it. The whitelist request is saved with no expiry and will retry until the server confirms it.');
+      }
       if (id.startsWith('reject:')) return i.showModal(form(`rejection:${id.slice(7)}`, 'Reason for rejecting', [['reason','Reason shown to the applicant',1000,true]]));
       if (id.startsWith('rejection:')) { decide(store,id.slice(10),i.user.id,false,i.fields.getTextInputValue('reason')); return reply('Application rejected with your reason.'); }
       if (id === 'join' || id === 'resend-welcome') {
@@ -193,10 +234,10 @@ export function createDiscord(store, c, yt, sharedClient = null) {
         await yt.submitVideo(i.user.id,i.options.getString('url',true),id === 'short'); return reply('Checked your linked channel and queued any eligible announcement. Duplicate posts are suppressed.');
       }
       if (id === 'health') {
-        const seen = store.get('bridgeSeen',0), jobs = store.all("SELECT id,kind,attempts,error FROM jobs WHERE state<>'done' LIMIT 10");
-        return reply(`Minecraft last connected: ${seen ? `<t:${Math.floor(seen/1000)}:R>` : 'never'}\nServer addresses: Java ${c.java ? 'configured' : 'MISSING JAVA_ADDRESS'}, Bedrock ${c.bedrock ? 'configured' : 'MISSING BEDROCK_ADDRESS'}\nLast DM error: ${store.get('dmError','none')}\nYouTube units today: ${store.one('SELECT used FROM quota WHERE day=?',quotaDay())?.used || 0}/${c.dailyBudget}\nCreators: ${store.one('SELECT count(*) AS n FROM creators').n}/${c.maxCreators}\nLast Discord error: ${store.get('discordError','none')}\nLast YouTube error: ${store.get('youtubeError','none')}\nPending jobs:\n${jobs.map(j=>`${j.id} · ${j.kind} · attempts ${j.attempts}${j.error ? ' · '+j.error : ''}`).join('\n') || 'none'}`.slice(0,1950));
+        const seen = store.get('bridgeSeen',0), jobs = store.all("SELECT id,kind,state,attempts,error FROM jobs WHERE state NOT IN ('done','cancelled') ORDER BY rowid DESC LIMIT 10");
+        return reply(`Minecraft last connected: ${seen ? `<t:${Math.floor(seen/1000)}:R>` : 'never'}\nServer addresses: Java ${c.java ? 'configured' : 'MISSING JAVA_ADDRESS'}, Bedrock ${c.bedrock ? 'configured' : 'MISSING BEDROCK_ADDRESS'}\nLast DM error: ${store.get('dmError','none')}\nYouTube units today: ${store.one('SELECT used FROM quota WHERE day=?',quotaDay())?.used || 0}/${c.dailyBudget}\nCreators: ${store.one('SELECT count(*) AS n FROM creators').n}/${c.maxCreators}\nLast Discord error: ${store.get('discordError','none')}\nLast YouTube error: ${store.get('youtubeError','none')}\nRecent unfinished jobs:\n${jobs.map(j=>`${j.id} · ${j.kind} · ${j.state} · attempts ${j.attempts}${j.error ? ' · '+j.error : ''}`).join('\n') || 'none'}`.slice(0,1950));
       }
-      if (id === 'retry') { store.run("UPDATE jobs SET until=0 WHERE id=? AND state='queued'",i.options.getString('job',true)); return reply('Queued job is eligible to retry. Use /health to check the result.'); }
+      if (id === 'retry') { const result=store.run("UPDATE jobs SET until=0 WHERE id=? AND state='queued'",i.options.getString('job',true)); return reply(result.changes ? 'Queued job is eligible to retry. Use /health to check the result.' : 'This job is not queued for retry. For a missing Minecraft account, submit a corrected username through the application form.'); }
       if (id === 'unlink-youtube') {
         const userId = i.options.getUser('member',true).id, creator = store.one('SELECT * FROM creators WHERE user_id=?',userId);
         if (!creator) { store.set(`youtubeDisabled:${userId}`,true); return reply('Automatic channel linking disabled for this member. Staff can re-enable it with /link-youtube.'); }
@@ -215,40 +256,90 @@ export function createDiscord(store, c, yt, sharedClient = null) {
       try { await reply(String(text).slice(0,1900)); } catch { console.error('Could not answer Discord interaction.'); }
     } finally { userLocks.delete(i.user.id); }
   });
-  async function maintenance() {
-    if (!client.isReady()) return;
-    await notifications.maintenance();
-    store.run('DELETE FROM drafts WHERE expires<?',Date.now());
-    store.run('DELETE FROM verifications WHERE expires<?',Date.now());
-    for (const [id,time] of starts) if (Date.now()-time>60000) starts.delete(id);
-    const guild = await client.guilds.fetch(c.guild);
-    for (const app of store.all('SELECT * FROM applications WHERE log_id IS NULL LIMIT 10')) {
-      const a = JSON.parse(app.answers);
-      const embed = new EmbedBuilder().setColor(0x65b891).setTitle(`Kind SMP application · ${app.id.slice(0,8)}`)
-        .setDescription(`Applicant: <@${app.user_id}>\nEdition: ${app.edition}`)
-        .addFields({name:'Minecraft username',value:app.username},{name:'Age',value:a.age},{name:'Agrees to rules',value:a.rules},{name:'How they heard about us',value:a.heard},{name:'Why they want to join',value:a.why},{name:'YouTube channel (optional)',value:a.youtube || 'Not provided'});
-      if (a.previousAccount) embed.addFields({name:'Account change', value: a.previousAccount.edition + ': ' + a.previousAccount.username + ' → ' + app.edition + ': ' + app.username + '. Current membership stays active until whitelisting succeeds. Staff must remove the old whitelist entry if needed. Existing YouTube links are retained.'});
-      const msg = await send(c.log,{embeds:[embed],components:[row(button(`approve:${app.id}`,'Approve',ButtonStyle.Success),button(`reject:${app.id}`,'Reject with reason',ButtonStyle.Danger))]},`application:${app.id}`);
-      store.run('UPDATE applications SET log_id=? WHERE id=?',msg.id,app.id);
-    }
-    for (const app of store.all("SELECT * FROM applications WHERE state<>'pending' AND notification_done=0 AND log_id IS NOT NULL LIMIT 20")) {
-      const ch = await client.channels.fetch(c.log);
-      try { const msg = await ch.messages.fetch(app.log_id); const embeds=msg.embeds.map(e=>EmbedBuilder.from(e).setFields(e.fields.map(f=>f.name.startsWith('YouTube') ? {...f,name:'YouTube channel (optional)'} : f))); await msg.edit({embeds,components:[],content:`${app.state === 'superseded' ? 'Replaced by a newer accepted account' : app.state === 'rejected' ? 'Rejected' : 'Approved'} by <@${app.reviewer}>${app.reason ? '\nReason: '+app.reason : app.state === 'superseded' ? '\nStaff: remove the old Minecraft whitelist entry if needed.' : app.state === 'ready' ? '\nWhitelisting completed by the Minecraft server.' : '\nWhitelist request saved with no expiry. Automatically processed when the SMP is running.'}`,allowedMentions:{parse:[]}}); }
-      catch (e) { if (e.code !== 10008) throw e; }
-      store.run('UPDATE applications SET notification_done=1 WHERE id=? AND state=?',app.id,app.state);
-    }
-    for (const app of store.all("SELECT * FROM applications WHERE state='ready' AND role_done=0 LIMIT 20")) {
-      try { const member = await guild.members.fetch(app.user_id); await member.roles.add(c.memberRole,'Kind SMP application approved'); store.run('UPDATE applications SET role_done=1 WHERE id=?',app.id); }
-      catch (e) { store.set('discordError',`Member role failed for application ${app.id.slice(0,8)} (Discord ${e.code || 'error'}).`); }
-    }
-    for (const creator of store.all('SELECT * FROM creators WHERE role_done=0 LIMIT 20')) {
-      try { const member = await guild.members.fetch(creator.user_id); await member.roles.add(c.youtubeRole,'YouTube channel linked through staff-approved application'); store.run('UPDATE creators SET role_done=1 WHERE user_id=?',creator.user_id); }
-      catch (e) { store.set('discordError',`YouTuber role assignment failed (Discord ${e.code || 'error'}).`); }
-    }
-    for (const p of store.all('SELECT * FROM posts WHERE message_id IS NULL AND next_try<? LIMIT 20',Date.now())) {
-      try { const msg = await send(p.channel,JSON.parse(p.body),p.key); store.run('UPDATE posts SET message_id=? WHERE key=?',msg.id,p.key); }
-      catch { store.run('UPDATE posts SET attempts=attempts+1,next_try=? WHERE key=?',Date.now()+Math.min(3600000,30000*2**Math.min(p.attempts,7)),p.key); }
+  async function safely(label, work) {
+    try { return await work(); }
+    catch (error) {
+      const message = `Discord maintenance (${label}): ${error.message || error}`;
+      store.set('discordError', message);
+      console.error(message);
+      return undefined;
     }
   }
-  return { client, maintenance };
+  async function processRows(label, rows, work) {
+    for (const item of rows) await safely(`${label} ${item.id ? item.id.slice(0,8) : ''}`.trim(), () => work(item));
+  }
+  async function maintenance() {
+    if (!client.isReady()) return;
+    await safely('notification delivery', () => notifications.maintenance());
+    await safely('draft cleanup', () => store.run('DELETE FROM drafts WHERE expires<?',Date.now()));
+    await safely('verification cleanup', () => store.run('DELETE FROM verifications WHERE expires<?',Date.now()));
+    for (const [id,time] of starts) if (Date.now()-time>60000) starts.delete(id);
+    const guild = await safely('fetch server', () => client.guilds.fetch(c.guild));
+    if (!guild) return;
+
+    await safely('create application log messages', async () => {
+      const apps = store.all('SELECT * FROM applications WHERE log_id IS NULL LIMIT 10');
+      await processRows('create application log', apps, async app => {
+        const a = JSON.parse(app.answers);
+        const embed = new EmbedBuilder().setColor(0x65b891).setTitle(`Kind SMP application · ${app.id.slice(0,8)}`)
+          .setDescription(`Applicant: <@${app.user_id}>\nEdition: ${app.edition}`)
+          .addFields({name:'Minecraft username',value:app.username},{name:'Age',value:a.age},{name:'Agrees to rules',value:a.rules},{name:'How they heard about us',value:a.heard},{name:'Why they want to join',value:a.why},{name:'YouTube channel (optional)',value:a.youtube || 'Not provided'});
+        if (a.previousAccount) embed.addFields({name:'Account change', value: a.previousAccount.edition + ': ' + a.previousAccount.username + ' → ' + app.edition + ': ' + app.username + '. Current membership stays active until whitelisting succeeds. Staff must remove the old whitelist entry if needed. Existing YouTube links are retained.'});
+        const msg = await send(c.log,{embeds:[embed],components:[row(button(`approve:${app.id}`,'Approve',ButtonStyle.Success),button(`reject:${app.id}`,'Reject with reason',ButtonStyle.Danger))]},`application:${app.id}`);
+        store.run('UPDATE applications SET log_id=? WHERE id=?',msg.id,app.id);
+      });
+    });
+
+    await safely('application outcome messages', async () => {
+      const apps = store.all("SELECT * FROM applications WHERE state<>'pending' AND notification_done=0 AND log_id IS NOT NULL LIMIT 20");
+      await processRows('application outcome', apps, async app => {
+        try {
+          const ch = await client.channels.fetch(c.log);
+          const msg = await ch.messages.fetch(app.log_id);
+          const embeds = msg.embeds.map(e => EmbedBuilder.from(e).setFields(e.fields.map(f => f.name.startsWith('YouTube') ? {...f,name:'YouTube channel (optional)'} : f)));
+          await msg.edit({embeds,components:[],content:applicationOutcome(app),allowedMentions:{parse:[]}});
+        } catch (error) {
+          if (!uneditableMessageCodes.has(String(error.code))) throw error;
+          if (String(error.code) === '50005' || String(error.code) === '10008') {
+            try {
+              const replacement = await send(c.log,applicationStatusBody(app),`application-status:${app.id}:${app.state}`);
+              store.run('UPDATE applications SET log_id=? WHERE id=?',replacement.id,app.id);
+            } catch (postError) {
+              store.set('discordError',`Application outcome ${app.id.slice(0,8)} could not be posted (Discord ${postError.code || 'error'}).`);
+              console.error(`Could not post replacement application status ${app.id.slice(0,8)}:`, postError.message || postError);
+            }
+          }
+        }
+        store.run('UPDATE applications SET notification_done=1 WHERE id=? AND state=?',app.id,app.state);
+      });
+    });
+
+    await safely('member role retries', async () => {
+      const apps = store.all("SELECT * FROM applications WHERE state IN ('approved','ready') AND role_done=0 LIMIT 20");
+      await processRows('member role', apps, async app => {
+        try {
+          const member = await guild.members.fetch(app.user_id);
+          await member.roles.add(c.memberRole,'Kind SMP application approved (retry)');
+          store.run('UPDATE applications SET role_done=1 WHERE id=?',app.id);
+          store.set(`memberRoleFailureNotice:${app.id}`,null);
+        } catch (error) { await reportMemberRoleFailure(app,error,'retrying role assignment'); }
+      });
+    });
+
+    await safely('YouTuber role retries', async () => {
+      const creators = store.all('SELECT * FROM creators WHERE role_done=0 LIMIT 20');
+      await processRows('YouTuber role', creators, async creator => {
+        try { const member = await guild.members.fetch(creator.user_id); await member.roles.add(c.youtubeRole,'YouTube channel linked through staff-approved application'); store.run('UPDATE creators SET role_done=1 WHERE user_id=?',creator.user_id); }
+        catch (error) { store.set('discordError',`YouTuber role assignment failed (Discord ${error.code || 'error'}).`); console.error('YouTuber role assignment failed:',error.message || error); }
+      });
+    });
+
+    await safely('queued Discord posts', async () => {
+      const posts = store.all('SELECT * FROM posts WHERE message_id IS NULL AND next_try<? LIMIT 20',Date.now());
+      await processRows('queued post', posts, async p => {
+        try { const msg = await send(p.channel,JSON.parse(p.body),p.key); store.run('UPDATE posts SET message_id=? WHERE key=?',msg.id,p.key); }
+        catch { store.run('UPDATE posts SET attempts=attempts+1,next_try=? WHERE key=?',Date.now()+Math.min(3600000,30000*2**Math.min(p.attempts,7)),p.key); }
+      });
+    });
+  }  return { client, maintenance };
 }

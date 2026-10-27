@@ -70,6 +70,49 @@ test('Member role errors are saved and posted to the staff log',async t=>{
     assert.match(posted[0].content,/Move the bot role above SMP Members/);
   } finally { s.close(); }
 });
+
+test('Discord Unknown Member cancels the application, stops role retries, and privately asks them to reapply',async t=>{
+  const s=new Store(':memory:'),c=config({});
+  const app=submit(s,'departed-member',{edition:'java',username:'KindPlayer',age:'13',rules:'yes',heard:'Friend',why:'Build together',youtube:''},c.cooldown);
+  s.run("UPDATE applications SET state='ready',role_done=0,log_id='application-message',notification_done=1 WHERE id=?",app);
+  s.queue('whitelist:'+app,'whitelist',{applicationId:app});
+  s.run("UPDATE jobs SET state='leased',lease='active-lease' WHERE unique_key=?",'whitelist:'+app);
+  const roleFetches=[], dmMessages=[], staffPosts=[], edited=[];
+  const guild={
+    members:{fetch:async userId=>{roleFetches.push(userId);const error=new Error('Unknown Member');error.code=10007;throw error;}},
+    roles:{fetch:async()=>null}
+  };
+  const channel={
+    guildId:c.guild,guild,isTextBased:()=>true,
+    permissionsFor:()=>null,
+    send:async body=>{staffPosts.push(body);return {id:'cancel-notice'};},
+    messages:{fetch:async()=>({embeds:[],edit:async body=>edited.push(body)})}
+  };
+  const fakeClient={
+    isReady:()=>true,once:()=>{},on:()=>{},guilds:{fetch:async()=>guild},channels:{fetch:async()=>channel},
+    users:{fetch:async id=>({send:async message=>dmMessages.push({id,message})})}
+  };
+  const {maintenance}=createDiscord(s,c,{},fakeClient);
+  try {
+    await maintenance();
+    assert.equal(s.one('SELECT state FROM applications WHERE id=?',app).state,'cancelled');
+    await maintenance(); // Outcome notification is processed on the next maintenance cycle.
+    assert.equal(s.one('SELECT role_done FROM applications WHERE id=?',app).role_done,1);
+    assert.equal(s.one('SELECT state FROM jobs WHERE unique_key=?','whitelist:'+app).state,'cancelled');
+    assert.equal(roleFetches.length,1);
+    assert.equal(dmMessages.length,1);
+    assert.match(dmMessages[0].message,/rejoin the server, then use \/apply/i);
+    assert.match(staffPosts[0].content,/cancelled/i);
+    assert.match(edited[0].content,/Cancelled because the applicant is no longer a member/);
+    assert.equal(s.ack(s.one('SELECT id FROM jobs WHERE unique_key=?','whitelist:'+app).id,'active-lease',true,{uuid:'12345678-1234-1234-1234-123456789012'}),false);
+
+    await maintenance();
+    assert.equal(roleFetches.length,1,'cancelled applications should no longer retry role assignment');
+    assert.equal(dmMessages.length,1,'the applicant should receive a single reapply DM');
+    assert.equal(staffPosts.length,1,'the cancellation notice should not repeat');
+  } finally { s.close(); }
+});
+
 test('Staff rejection through the Discord modal requires a nonblank reason',async t=>{
   const f=fixture(t,true); f.i.customId=`rejection:${f.app}`; f.i.fields={getTextInputValue:()=> '   '};
   await f.handle(f.i); assert.equal(f.s.one('SELECT state FROM applications').state,'pending');

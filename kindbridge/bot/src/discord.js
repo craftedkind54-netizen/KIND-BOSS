@@ -57,6 +57,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
   const uneditableMessageCodes = new Set(['10008', '50005', '50001', '50013']);
   function applicationOutcome(app) {
     if (app.state === 'rejected') return `Rejected by <@${app.reviewer}>${app.reason ? ': ' + app.reason : ''}`;
+    if (app.state === 'cancelled') return 'Cancelled because the applicant is no longer a member of this Discord server. They were asked to rejoin and apply again by DM.';
     if (app.state === 'superseded') return 'Replaced by a newer accepted account. Staff: remove the previous Minecraft whitelist entry if needed.';
     if (app.state === 'ready') return `Approved by <@${app.reviewer}>. Minecraft whitelist: complete.`;
     return `Approved by <@${app.reviewer}>. Minecraft whitelist: pending; request is saved until the server processes it.`;
@@ -70,6 +71,32 @@ export function createDiscord(store, c, yt, sharedClient = null) {
   }
   async function reportMemberRoleFailure(app, error, origin) {
     const code = String(error.code || 'error');
+    if (code === '10007') {
+      const changed = store.transaction(() => {
+        const result = store.run("UPDATE applications SET state='cancelled',reason=?,decided=?,role_done=1,notification_done=0 WHERE id=? AND state IN ('approved','ready')", 'Applicant is no longer a member of the Discord server (Discord 10007). Rejoin and use /apply to submit a new application.', Date.now(), app.id);
+        if (!result.changes) return false;
+        store.run("UPDATE jobs SET state='cancelled',lease=NULL WHERE kind='whitelist' AND state IN ('queued','leased') AND json_extract(payload,'$.applicationId')=?", app.id);
+        return true;
+      });
+      if (!changed) return {cancelled:false,dmSent:false};
+
+      let dmSent = false;
+      try {
+        const user = await client.users.fetch(app.user_id);
+        await user.send('Your Kind SMP application was cancelled because we could not find you in the Discord server. Please rejoin the server, then use /apply to submit a new application. Staff approval is required again.');
+        dmSent = true;
+      } catch (dmError) {
+        store.set('discordError', `Application ${app.id.slice(0,8)} was cancelled, but its reapply DM could not be delivered (Discord ${dmError.code || 'error'}).`);
+        console.error(`Could not DM applicant for cancelled application ${app.id.slice(0,8)}:`, dmError.message || dmError);
+      }
+      store.set(`memberRoleFailureNotice:${app.id}`, {code, sentAt:Date.now(), cancelled:true, dmSent});
+      try {
+        await send(c.log, {content:`Application ${app.id.slice(0,8)} cancelled: Discord could not find the applicant in the server. Reapply DM ${dmSent ? 'sent' : 'could not be delivered'}. (while ${origin})`}, `application-cancelled:${app.id}`);
+      } catch (postError) {
+        console.error(`Could not post cancellation for application ${app.id.slice(0,8)}:`, postError.message || postError);
+      }
+      return {cancelled:true,dmSent};
+    }
     const detail = code === '50013' ? 'Move the bot role above SMP Members and grant Manage Roles.' : 'Check the bot role and server permissions.';
     const message = `Member role failed for application ${app.id.slice(0,8)} (Discord ${code}).`;
     store.set('discordError', message + ' ' + detail);
@@ -184,7 +211,12 @@ export function createDiscord(store, c, yt, sharedClient = null) {
           await member.roles.add(c.memberRole,'Kind SMP application approved');
           store.run('UPDATE applications SET role_done=1 WHERE id=?',app.id);
           store.set(`memberRoleFailureNotice:${app.id}`,null);
-        } catch (error) { await reportMemberRoleFailure(app,error,'approving the application'); }
+        } catch (error) {
+          const failure = await reportMemberRoleFailure(app,error,'approving the application');
+          if (failure?.cancelled) return reply(failure.dmSent
+            ? 'Application cancelled because the applicant is no longer in the Discord server. A private DM asked them to rejoin and apply again.'
+            : 'Application cancelled because the applicant is no longer in the Discord server. The reapply DM could not be delivered; staff were notified.');
+        }
         return reply('Approved. The SMP Members role was assigned or staff were notified if Discord refused it. The whitelist request is saved with no expiry and will retry until the server confirms it.');
       }
       if (id.startsWith('reject:')) return i.showModal(form(`rejection:${id.slice(7)}`, 'Reason for rejecting', [['reason','Reason shown to the applicant',1000,true]]));
@@ -204,7 +236,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
       if (id === 'status') {
         const app = store.one('SELECT * FROM applications WHERE user_id=? ORDER BY created DESC, rowid DESC LIMIT 1', i.user.id);
         if (!app) return reply('You have not applied yet. Use /apply.');
-        const state = { pending:'Your submitted application is saved and waiting for staff review. It does not expire after 30 minutes.',approved:'Approved by staff. Your whitelist request is saved with no expiry. The plugin adds you automatically while the SMP is running, or resumes when it starts again. No need to reapply. If it stays pending while the SMP is online, staff can check /health for a connection or account lookup error.',ready:joining(c, true, app.username),rejected:`Rejected: ${app.reason}\nYou may reapply <t:${Math.ceil((app.decided+c.cooldown)/1000)}:R>.` }[app.state];
+        const state = { pending:'Your submitted application is saved and waiting for staff review. It does not expire after 30 minutes.',approved:'Approved by staff. Your whitelist request is saved with no expiry. The plugin adds you automatically while the SMP is running, or resumes when it starts again. No need to reapply. If it stays pending while the SMP is online, staff can check /health for a connection or account lookup error.',ready:joining(c, true, app.username),rejected:`Rejected: ${app.reason}\nYou may reapply <t:${Math.ceil((app.decided+c.cooldown)/1000)}:R>.`,cancelled:'Your application was cancelled because you are no longer a member of the Discord server. Rejoin the server, then use /apply to apply again.' }[app.state];
         const dm = store.get(notifications.keyFor(app),{});
         const dmStatus = ['approved','ready'].includes(app.state) ? '\nPrivate DM: ' + (dm.status || (app.dm_done === 1 ? 'sent' : app.dm_done === 2 ? 'blocked' : 'queued')) + '. Use /join to send it again.' : '';
         const current = store.one("SELECT username FROM applications WHERE user_id=? AND state='ready'", i.user.id);

@@ -85,7 +85,7 @@ export function server(store, c, youtube, ready = () => true) {
           }
           const row = store.one('SELECT id,state FROM bounties WHERE id=?', body.id);
           if (!row) return reply(404, { error: 'Unknown bounty' });
-          const transitions = { pending: ['active','cancelled'], approved: ['active','rejected'], active: ['claimed','expired','refunded'], claimed: ['claimed'], expired: ['expired'], refunded: ['refunded'], rejected: ['rejected'], cancelled: ['cancelled'] };
+          const transitions = { pending: ['active','cancelled'], approved: ['active','rejected','cancelled'], active: ['claimed','expired','refunded','cancelled'], claimed: ['claimed'], expired: ['expired'], refunded: ['refunded'], rejected: ['rejected'], cancelled: ['cancelled'] };
           if (!transitions[row.state]?.includes(body.state)) return reply(409, { error: `Invalid bounty transition ${row.state} -> ${body.state}` });
           const previous=JSON.parse(store.one('SELECT result FROM bounties WHERE id=?',body.id).result || '{}');
           store.run('UPDATE bounties SET state=?,result=?,discord_dirty=1 WHERE id=?', body.state, JSON.stringify({...previous,...body}), body.id);

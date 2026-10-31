@@ -17,7 +17,7 @@ async function readBody(req, limit = 262144) {
   }
   return Buffer.concat(chunks);
 }
-const validMinecraftName = value => typeof value === 'string' && /^[\\p{L}\\p{N}_. -]{1,32}$/u.test(value) && value.trim().length > 0;
+const validMinecraftName = value => typeof value === 'string' && /^[\p{L}\p{N}_. -]{1,32}$/u.test(value) && value.trim().length > 0;
 
 export function server(store, c, youtube, ready = () => true) {
   return createServer(async (req, res) => {

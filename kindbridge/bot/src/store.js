@@ -31,6 +31,20 @@ export class Store {
       CREATE TABLE IF NOT EXISTS posts (key TEXT PRIMARY KEY, channel TEXT NOT NULL, body TEXT NOT NULL,
         message_id TEXT, attempts INTEGER DEFAULT 0, next_try INTEGER DEFAULT 0);
       CREATE TABLE IF NOT EXISTS quota (day TEXT PRIMARY KEY, used INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS bounties (
+        id TEXT PRIMARY KEY, poster_uuid TEXT NOT NULL, poster_name TEXT NOT NULL,
+        target_uuid TEXT NOT NULL, target_name TEXT NOT NULL, payload TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending', created INTEGER NOT NULL, expires INTEGER NOT NULL,
+        reviewer_id TEXT, review_message_id TEXT, public_message_id TEXT,
+        result TEXT NOT NULL DEFAULT '{}', discord_dirty INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS one_open_bounty_per_poster ON bounties(poster_uuid)
+        WHERE state IN ('pending','approved','active');
+      CREATE TABLE IF NOT EXISTS bounty_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, bounty_id TEXT NOT NULL, action TEXT NOT NULL,
+        reviewer_id TEXT NOT NULL, created INTEGER NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(bounty_id) REFERENCES bounties(id)
+      );
     `);
     if (!this.get('accountReapplicationsV1', false)) {
       this.transaction(() => {
@@ -93,6 +107,34 @@ export class Store {
           this.queue('account-creator:' + app.id, 'creator', {...JSON.parse(creator.data), uuid: result.uuid, minecraftName: app.username, refreshedAt: creator.refreshed, nextRefreshAt: creator.refreshed + 7*86400000});
         }
       }
+      return true;
+    });
+  }
+  submitBounty(row) {
+    return this.transaction(() => {
+      const existing = this.one('SELECT id,state FROM bounties WHERE id=?', row.id);
+      if (existing) {
+        if (row.ownerEvent === true && existing.state === 'pending') {
+          this.run("UPDATE bounties SET payload=?,state='active',discord_dirty=1 WHERE id=? AND state='pending'", JSON.stringify(row), row.id);
+        }
+        return existing.id;
+      }
+      if (this.one("SELECT id FROM bounties WHERE poster_uuid=? AND state IN ('pending','approved','active')", row.posterUuid)) {
+        throw new Error('You already have an active or pending bounty.');
+      }
+      const initialState = row.ownerEvent === true ? 'active' : 'pending';
+      this.run(`INSERT INTO bounties(id,poster_uuid,poster_name,target_uuid,target_name,payload,state,created,expires)
+        VALUES (?,?,?,?,?,?,?,?,?)`, row.id, row.posterUuid, row.posterName, row.targetUuid,
+        row.targetName, JSON.stringify(row), initialState, row.created, row.expires);
+      return row.id;
+    });
+  }
+  bountyDecision(id, action, reviewerId) {
+    return this.transaction(() => {
+      const state = action === 'approve' ? 'approved' : 'rejected';
+      const r = this.run("UPDATE bounties SET state=?,reviewer_id=?,discord_dirty=1 WHERE id=? AND state='pending'", state, reviewerId, id);
+      if (!r.changes) return false;
+      this.run('INSERT INTO bounty_actions(bounty_id,action,reviewer_id,created) VALUES (?,?,?,?)', id, action, reviewerId, Date.now());
       return true;
     });
   }

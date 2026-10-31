@@ -454,13 +454,19 @@ export function createDiscord(store, c, yt, sharedClient = null) {
             store.run('UPDATE bounties SET discord_dirty=0 WHERE id=?',bounty.id);
           }
         } else if (['claimed','expired','refunded','rejected','cancelled'].includes(bounty.state)) {
-          const staffOnly=['rejected','cancelled'].includes(bounty.state);
-          const channelId=staffOnly ? c.bountyStaffChannel : c.bountyChannel;
-          const messageId=staffOnly ? bounty.review_message_id : bounty.public_message_id;
-          if (messageId) {
-            const channel=await client.channels.fetch(channelId), msg=await channel.messages.fetch(messageId);
-            const content=bounty.state==='rejected' && result.reason ? `Reason: ${result.reason}` : bounty.state==='cancelled' ? 'Withdrawn by the poster; escrow has been returned.' : '';
-            await msg.edit({...bountyContent(bounty,c,bounty.state,result),components:[],content});
+          const content=bounty.state==='rejected' && result.reason ? `Reason: ${result.reason}` : bounty.state==='cancelled' ? 'Withdrawn by the poster; escrow has been returned.' : '';
+          const destinations = bounty.state==='cancelled'
+            ? [[c.bountyChannel,bounty.public_message_id],[c.bountyStaffChannel,bounty.review_message_id]]
+            : [[['rejected'].includes(bounty.state) ? c.bountyStaffChannel : c.bountyChannel,
+                ['rejected'].includes(bounty.state) ? bounty.review_message_id : bounty.public_message_id]];
+          for (const [channelId,messageId] of destinations) {
+            if (!messageId) continue;
+            try {
+              const channel=await client.channels.fetch(channelId), msg=await channel.messages.fetch(messageId);
+              await msg.edit({...bountyContent(bounty,c,bounty.state,result),components:[],content,allowedMentions:{parse:[]}});
+            } catch (error) {
+              console.error(`Could not update withdrawn/settled bounty ${bounty.id.slice(0,8)} in channel ${channelId}: ${error.message || error}`);
+            }
           }
           store.run('UPDATE bounties SET discord_dirty=0 WHERE id=?',bounty.id);
         }

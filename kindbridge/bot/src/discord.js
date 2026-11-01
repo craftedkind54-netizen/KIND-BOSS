@@ -1,6 +1,6 @@
 import { Client, GatewayIntentBits, MessageFlags, PermissionFlagsBits, SlashCommandBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, LabelBuilder,
-  EmbedBuilder } from 'discord.js';
+  EmbedBuilder, AttachmentBuilder } from 'discord.js';
 import { submit, decide, joining } from './applications.js';
 import { quotaDay, channelTarget } from './youtube.js';
 import { createNotifications } from './notifications.js';
@@ -31,19 +31,57 @@ function applicationPanelBody(c) {
     components: [row(button('edition:java','Apply · Java'), button('edition:bedrock','Apply · Bedrock'))]
   };
 }
+function bountyContent(row, c, state = row.state, result = {}) {
+  const data = JSON.parse(row.payload);
+  const rewardItems = (data.items || []).map(item => `${item.amount} × ${item.name || item.material}`).join('\n') || 'No item reward';
+  const embed = new EmbedBuilder().setColor(state === 'active' ? 0xf1b83b : state === 'claimed' ? 0x57f287 : 0x777777)
+    .setTitle(`Kind SMP bounty · ${row.id.slice(0,8)}`)
+    .setDescription(`**Target:** ${row.target_name}\n**Posted by:** ${row.poster_name}\n**Kill-level reward:** ${data.levels}`)
+    .addFields({name:'Type',value:data.ownerEvent ? 'Owner event bounty' : 'Player bounty'},{name:'Items in escrow',value:rewardItems},{name:'Expires',value:`<t:${Math.floor(row.expires/1000)}:F>`})
+    .setThumbnail(`https://mc-heads.net/avatar/${row.target_uuid}/128`);
+  const first = (data.items || []).find(item => item.material);
+  if (first) {
+    const texture = String(first.material).toLowerCase();
+    embed.setImage(`https://mcasset.cloud/1.21.11/assets/minecraft/textures/item/${encodeURIComponent(texture)}.png`);
+  }
+  const files=[], embeds=[embed];
+  for (const [index,item] of (data.items || []).slice(0,data.levelsIcon ? 8 : 9).entries()) {
+    let image;
+    if (item.icon && /^[A-Za-z0-9+/=]+$/.test(item.icon)) {
+      const filename=`bounty-item-${index}.png`;
+      files.push(new AttachmentBuilder(Buffer.from(item.icon,'base64'),{name:filename}));
+      image=`attachment://${filename}`;
+    } else if (item.material) {
+      image=`https://mcasset.cloud/1.21.11/assets/minecraft/textures/item/${encodeURIComponent(String(item.material).toLowerCase())}.png`;
+    }
+    if (image) embeds.push(new EmbedBuilder().setColor(0x9b59b6).setTitle(`${item.amount} × ${item.name || item.material}`).setImage(image));
+  }
+  if (data.levelsIcon && /^[A-Za-z0-9+/=]+$/.test(data.levelsIcon)) {
+    const filename='bounty-kill-level-token.png';
+    files.push(new AttachmentBuilder(Buffer.from(data.levelsIcon,'base64'),{name:filename}));
+    embeds.push(new EmbedBuilder().setColor(0xe6b422).setTitle(`${data.levels} kill levels`).setImage(`attachment://${filename}`));
+  }
+  if (state === 'claimed') embed.addFields({name:'Result',value:`Claimed by ${result.winnerName || 'a player'}`});
+  else if (state === 'expired') embed.addFields({name:'Result',value:result.winnerName ? `Expired after the target survived; reward delivered to ${result.winnerName}.` : 'The bounty expired.'});
+  else if (state === 'refunded') embed.addFields({name:'Result',value:`Expired; reward returned to ${row.poster_name}.`});
+  else if (state === 'rejected') embed.addFields({name:'Result',value:'Not approved by staff.'});
+  else if (state === 'cancelled') embed.addFields({name:'Result',value:`Withdrawn by ${row.poster_name}; escrow returned.`});
+  return {embeds,files};
+}
+
 const reapplyButtons = () => row(button('reapply:java','Reapply · Java'), button('reapply:bedrock','Reapply · Bedrock'));
 // Only used to finish drafts opened before the single-form update.
 const youtubeForm = () => form('application:youtube', 'Kind SMP application · 2 of 2', [['youtube', 'YouTube channel link (optional)', 200, false, false]]);
 
 export function createDiscord(store, c, yt, sharedClient = null) {
-  const client = sharedClient || new Client({ intents: [GatewayIntentBits.Guilds], allowedMentions: { parse: [] } });
+  const client = sharedClient || new Client({ intents: [GatewayIntentBits.Guilds], allowedMentions: { parse: mentionEveryone ? ['everyone'] : [] } });
   const notifications = createNotifications(store, c, client);
   async function staff(i) {
     if (i.guildId !== c.guild) throw new Error('Use this command in the Kind SMP Discord server.');
     const member = await i.guild.members.fetch({ user: i.user.id, force: true });
     if (!c.staffRoles.some(id => member.roles.cache.has(id))) throw new Error('Only the configured Kind SMP staff role can do that.');
   }
-  async function send(channelId, body, key = null) {
+  async function send(channelId, body, key = null, { mentionEveryone = false } = {}) {
     const channel = await client.channels.fetch(channelId);
     if (!channel?.isTextBased() || channel.guildId !== c.guild || !channel.send) throw new Error('Configured channel is unavailable.');
     if (channelId === c.log) {
@@ -156,9 +194,9 @@ export function createDiscord(store, c, yt, sharedClient = null) {
     userLocks.add(i.user.id);
     try {
       const id = i.customId || i.commandName;
-      if (['setup','health','retry','unlink-youtube','link-youtube','resend-welcome'].includes(id) || /^(approve|reject|rejection):/.test(id)) {
+      if (['setup','health','retry','unlink-youtube','link-youtube','resend-welcome'].includes(id) || /^(approve|reject|rejection|bounty-approve|bounty-reject|bounty-rejection):/.test(id)) {
         // Button-to-modal responses must be immediate; the staff check still uses a fresh REST fetch.
-        if (!id.startsWith('reject:')) await i.deferReply({ flags: ephemeral });
+        if (!id.startsWith('reject:') && !id.startsWith('bounty-reject:')) await i.deferReply({ flags: ephemeral });
         await staff(i);
       }
       if (id === 'setup') {
@@ -239,6 +277,19 @@ export function createDiscord(store, c, yt, sharedClient = null) {
       }
       if (id.startsWith('reject:')) return i.showModal(form(`rejection:${id.slice(7)}`, 'Reason for rejecting', [['reason','Reason shown to the applicant',1000,true]]));
       if (id.startsWith('rejection:')) { decide(store,id.slice(10),i.user.id,false,i.fields.getTextInputValue('reason')); return reply('Application rejected with your reason.'); }
+      if (id.startsWith('bounty-approve:')) {
+        const bountyId=id.slice('bounty-approve:'.length), changed=store.bountyDecision(bountyId,'approve',i.user.id);
+        if (!changed) throw new Error('This bounty is no longer awaiting staff review.');
+        return reply('Bounty approved. It will become public after the Minecraft server confirms it.');
+      }
+      if (id.startsWith('bounty-reject:')) return i.showModal(form(`bounty-rejection:${id.slice('bounty-reject:'.length)}`, 'Reject bounty', [['reason','Reason for rejecting',500,true]]));
+      if (id.startsWith('bounty-rejection:')) {
+        const bountyId=id.slice('bounty-rejection:'.length), bounty=store.one("SELECT * FROM bounties WHERE id=? AND state='pending'",bountyId);
+        if (!bounty) throw new Error('This bounty is no longer awaiting review.');
+        if (!store.bountyDecision(bountyId,'reject',i.user.id)) throw new Error('This bounty is no longer awaiting review.');
+        store.run('UPDATE bounties SET result=?,discord_dirty=1 WHERE id=?',JSON.stringify({reason:i.fields.getTextInputValue('reason').trim()}),bountyId);
+        return reply('Bounty rejected. The Minecraft server will return the escrow to the poster.');
+      }
       if (id === 'join' || id === 'resend-welcome') {
         if (!i.deferred) await i.deferReply({flags:ephemeral});
         const userId = id === 'join' ? i.user.id : i.options.getUser('member',true).id;
@@ -383,6 +434,62 @@ export function createDiscord(store, c, yt, sharedClient = null) {
       await processRows('YouTuber role', creators, async creator => {
         try { const member = await guild.members.fetch(creator.user_id); await member.roles.add(c.youtubeRole,'YouTube channel linked through staff-approved application'); store.run('UPDATE creators SET role_done=1 WHERE user_id=?',creator.user_id); }
         catch (error) { store.set('discordError',`YouTuber role assignment failed (Discord ${error.code || 'error'}).`); console.error('YouTuber role assignment failed:',error.message || error); }
+      });
+    });
+
+    await safely('create bounty review messages', async () => {
+      const bounties=store.all("SELECT * FROM bounties WHERE state='pending' AND review_message_id IS NULL LIMIT 10");
+      await processRows('create bounty review',bounties,async bounty=>{
+        const msg=await send(c.bountyStaffChannel,{...bountyContent(bounty,c),components:[row(
+          button(`bounty-approve:${bounty.id}`,'Approve',ButtonStyle.Success),
+          button(`bounty-reject:${bounty.id}`,'Reject with reason',ButtonStyle.Danger))]},`bounty-review:${bounty.id}`);
+        store.run('UPDATE bounties SET review_message_id=?,discord_dirty=0 WHERE id=? AND review_message_id IS NULL',msg.id,bounty.id);
+      });
+    });
+
+    await safely('bounty Discord updates', async () => {
+      const bounties=store.all('SELECT * FROM bounties WHERE discord_dirty=1 LIMIT 20');
+      await processRows('bounty Discord update',bounties,async bounty=>{
+        const result=JSON.parse(bounty.result || '{}');
+        if (bounty.state === 'approved') {
+          if (bounty.review_message_id) {
+            const review=await client.channels.fetch(c.bountyStaffChannel), reviewMsg=await review.messages.fetch(bounty.review_message_id);
+            await reviewMsg.edit({...bountyContent(bounty,c,'approved'),components:[],content:'Approved by staff; waiting for Minecraft server confirmation.'});
+          }
+          store.run('UPDATE bounties SET discord_dirty=0 WHERE id=?',bounty.id);
+        } else if (bounty.state === 'active') {
+          if (bounty.review_message_id) {
+            try {
+              const review=await client.channels.fetch(c.bountyStaffChannel), reviewMsg=await review.messages.fetch(bounty.review_message_id);
+              const reviewText=JSON.parse(bounty.payload || '{}').ownerEvent ? 'Owner event bounty published directly.' : 'Approved and confirmed by the Minecraft server.';
+              await reviewMsg.edit({...bountyContent(bounty,c,'active'),components:[],content:reviewText});
+            } catch (error) { console.error(`Could not update bounty review ${bounty.id.slice(0,8)}: ${error.message || error}`); }
+          }
+          if (!bounty.public_message_id) {
+            const msg=await send(c.bountyChannel,{...bountyContent(bounty,c,'active'),content:'@everyone A new SMP bounty is live!'},`bounty-public:${bounty.id}`,{mentionEveryone:true});
+            store.run('UPDATE bounties SET public_message_id=?,discord_dirty=0 WHERE id=?',msg.id,bounty.id);
+          } else {
+            const channel=await client.channels.fetch(c.bountyChannel), msg=await channel.messages.fetch(bounty.public_message_id);
+            await msg.edit({...bountyContent(bounty,c,'active'),components:[]});
+            store.run('UPDATE bounties SET discord_dirty=0 WHERE id=?',bounty.id);
+          }
+        } else if (['claimed','expired','refunded','rejected','cancelled'].includes(bounty.state)) {
+          const content=bounty.state==='rejected' && result.reason ? `Reason: ${result.reason}` : bounty.state==='cancelled' ? 'Withdrawn by the poster; escrow has been returned.' : '';
+          const destinations = bounty.state==='cancelled'
+            ? [[c.bountyChannel,bounty.public_message_id],[c.bountyStaffChannel,bounty.review_message_id]]
+            : [[['rejected'].includes(bounty.state) ? c.bountyStaffChannel : c.bountyChannel,
+                ['rejected'].includes(bounty.state) ? bounty.review_message_id : bounty.public_message_id]];
+          for (const [channelId,messageId] of destinations) {
+            if (!messageId) continue;
+            try {
+              const channel=await client.channels.fetch(channelId), msg=await channel.messages.fetch(messageId);
+              await msg.edit({...bountyContent(bounty,c,bounty.state,result),components:[],content,allowedMentions:{parse:[]}});
+            } catch (error) {
+              console.error(`Could not update withdrawn/settled bounty ${bounty.id.slice(0,8)} in channel ${channelId}: ${error.message || error}`);
+            }
+          }
+          store.run('UPDATE bounties SET discord_dirty=0 WHERE id=?',bounty.id);
+        }
       });
     });
 

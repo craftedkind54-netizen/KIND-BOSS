@@ -73,7 +73,7 @@ function bountyContent(row, c, state = row.state, result = {}) {
 const youtubeForm = () => form('application:youtube', 'Kind SMP application · 2 of 2', [['youtube', 'YouTube channel link (optional)', 200, false, false]]);
 
 export function createDiscord(store, c, yt, sharedClient = null) {
-  const client = sharedClient || new Client({ intents: [GatewayIntentBits.Guilds], allowedMentions: { parse: mentionEveryone ? ['everyone'] : [] } });
+  const client = sharedClient || new Client({ intents: [GatewayIntentBits.Guilds] });
   const notifications = createNotifications(store, c, client);
   async function staff(i) {
     if (i.guildId !== c.guild) throw new Error('Use this command in the Kind SMP Discord server.');
@@ -90,7 +90,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
       }
     }
     const nonce = key ? createHash('sha256').update(key).digest('hex').slice(0,24) : undefined;
-    return channel.send({ ...body, ...(nonce ? {nonce, enforceNonce: true} : {}), allowedMentions: { parse: [] } });
+    return channel.send({ ...body, ...(nonce ? {nonce, enforceNonce: true} : {}), allowedMentions: { parse: mentionEveryone ? ['everyone'] : [] } });
   }
   const uneditableMessageCodes = new Set(['10008', '50005', '50001', '50013']);
   function applicationOutcome(app) {
@@ -428,7 +428,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
     });
 
     await safely('bounty Discord updates', async () => {
-      const bounties=store.all('SELECT * FROM bounties WHERE discord_dirty=1 LIMIT 20');
+      const bounties=store.all("SELECT * FROM bounties WHERE discord_dirty=1 OR (state='active' AND public_message_id IS NULL) LIMIT 20");
       await processRows('bounty Discord update',bounties,async bounty=>{
         const result=JSON.parse(bounty.result || '{}');
         if (bounty.state === 'approved') {
@@ -445,14 +445,21 @@ export function createDiscord(store, c, yt, sharedClient = null) {
               await reviewMsg.edit({...bountyContent(bounty,c,'active'),components:[],content:reviewText});
             } catch (error) { console.error(`Could not update bounty review ${bounty.id.slice(0,8)}: ${error.message || error}`); }
           }
-          if (!bounty.public_message_id) {
-            const msg=await send(c.bountyChannel,{...bountyContent(bounty,c,'active'),content:'@everyone A new SMP bounty is live!'},`bounty-public:${bounty.id}`,{mentionEveryone:true});
-            store.run('UPDATE bounties SET public_message_id=?,discord_dirty=0 WHERE id=?',msg.id,bounty.id);
-          } else {
-            const channel=await client.channels.fetch(c.bountyChannel), msg=await channel.messages.fetch(bounty.public_message_id);
-            await msg.edit({...bountyContent(bounty,c,'active'),components:[]});
-            store.run('UPDATE bounties SET discord_dirty=0 WHERE id=?',bounty.id);
+          const publicBody={...bountyContent(bounty,c,'active'),components:[]};
+          if (bounty.public_message_id) {
+            try {
+              const channel=await client.channels.fetch(c.bountyChannel), msg=await channel.messages.fetch(bounty.public_message_id);
+              await msg.edit({...publicBody,allowedMentions:{parse:[]}});
+              store.run('UPDATE bounties SET discord_dirty=0 WHERE id=?',bounty.id);
+              return;
+            } catch (error) {
+              // Old or deleted announcement messages must not strand a live bounty forever.
+              if (!['10008','50005'].includes(String(error.code))) throw error;
+              store.run('UPDATE bounties SET public_message_id=NULL WHERE id=?',bounty.id);
+            }
           }
+          const msg=await send(c.bountyChannel,{...publicBody,content:'@everyone A new SMP bounty is live!'},`bounty-public:${bounty.id}`,{mentionEveryone:true});
+          store.run('UPDATE bounties SET public_message_id=?,discord_dirty=0 WHERE id=?',msg.id,bounty.id);
         } else if (['claimed','expired','refunded','rejected','cancelled'].includes(bounty.state)) {
           const content=bounty.state==='rejected' && result.reason ? `Reason: ${result.reason}` : bounty.state==='cancelled' ? 'Withdrawn by the poster; escrow has been returned.' : '';
           const destinations = bounty.state==='cancelled'

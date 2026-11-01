@@ -175,3 +175,27 @@ test('Accepted member can open the same form and submit a new account through Di
   assert.match(f.responses.at(-1).content,/Application submitted/);
   assert.equal(f.s.one("SELECT count(*) AS n FROM applications WHERE user_id='applicant'").n,2);
 });
+
+test('Active bounties publish to the public channel with a ping and recover stale message IDs',async()=>{
+  const s=new Store(':memory:'),c=config({});
+  const id='123e4567-e89b-42d3-a456-426614174000', created=Date.now();
+  s.submitBounty({id,posterUuid:'11111111-1111-4111-8111-111111111111',posterName:'Owner',targetUuid:'22222222-2222-4222-8222-222222222222',targetName:'Target',ownerEvent:true,levels:5,items:[],created,expires:created+86400000});
+  const posted=[];
+  const channel={guildId:c.guild,isTextBased:()=>true,send:async body=>{posted.push(body);return {id:'posted-'+posted.length};},messages:{fetch:async()=>{const error=new Error('Unknown Message');error.code=10008;throw error;}}};
+  const client={isReady:()=>true,once:()=>{},on:()=>{},guilds:{fetch:async()=>({})},channels:{fetch:async()=>channel},users:{fetch:async()=>{throw new Error('unexpected DM');}}};
+  const {maintenance}=createDiscord(s,c,{},client);
+  try {
+    // Recover a live bounty whose dirty flag was cleared before its public post was saved.
+    s.run('UPDATE bounties SET discord_dirty=0 WHERE id=?',id);
+    await maintenance();
+    assert.equal(posted.length,1);
+    assert.equal(posted[0].content,'@everyone A new SMP bounty is live!');
+    assert.deepEqual(posted[0].allowedMentions.parse,['everyone']);
+    assert.equal(s.one('SELECT public_message_id FROM bounties WHERE id=?',id).public_message_id,'posted-1');
+    s.run('UPDATE bounties SET public_message_id=?,discord_dirty=1 WHERE id=?','stale-message',id);
+    await maintenance();
+    assert.equal(posted.length,2,'a stale message ID should produce a replacement announcement');
+    assert.equal(s.one('SELECT public_message_id FROM bounties WHERE id=?',id).public_message_id,'posted-2');
+    assert.equal(s.one('SELECT discord_dirty FROM bounties WHERE id=?',id).discord_dirty,0);
+  } finally { s.close(); }
+});

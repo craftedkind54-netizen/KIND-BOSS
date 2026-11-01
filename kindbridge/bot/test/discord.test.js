@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/store.js';
 import { config } from '../src/config.js';
 import { createDiscord } from '../src/discord.js';
-import { submit } from '../src/applications.js';
+import { submit, decide } from '../src/applications.js';
 
 function fixture(t,staffRole=false) {
   const s=new Store(':memory:'),c=config({});
@@ -175,3 +175,31 @@ test('Accepted member can open the same form and submit a new account through Di
   assert.match(f.responses.at(-1).content,/Application submitted/);
   assert.equal(f.s.one("SELECT count(*) AS n FROM applications WHERE user_id='applicant'").n,2);
 });
+
+for (const edition of ['java','bedrock']) test(`An approved applicant can click ${edition} reapply and submit a corrected account`,async t=>{
+  const f=fixture(t); decide(f.s,f.app,'staff',true);
+  f.i.user.id='applicant';
+  f.i.customId=undefined; f.i.isChatInputCommand=()=>true; f.i.isButton=()=>false; f.i.isModalSubmit=()=>false;
+  f.i.commandName='status';
+  await f.handle(f.i);
+  assert.match(f.responses.at(-1).content,/whitelist confirmation.*pending/i);
+  assert.deepEqual(f.responses.at(-1).components[0].components.map(component=>component.data.custom_id),['reapply:java','reapply:bedrock']);
+
+  f.i.isChatInputCommand=()=>false; f.i.isButton=()=>true; f.i.customId='reapply:'+edition;
+  let modal;
+  f.i.showModal=async value=>{modal=value.toJSON();};
+  await f.handle(f.i);
+  assert.equal(modal.custom_id,'application-reapply:'+edition);
+
+  f.i.isButton=()=>false; f.i.isModalSubmit=()=>true; f.i.customId=modal.custom_id;
+  const values={username:edition==='java'?'CorrectJavaName':'Correct Gamertag',age:'18',heard:'Friend',why:'I corrected my account name',youtube:''};
+  f.i.fields={getTextInputValue:key=>values[key]};
+  await f.handle(f.i);
+  const replacement=f.s.one("SELECT * FROM applications WHERE user_id='applicant' AND state='pending'");
+  assert.equal(replacement.edition,edition);
+  assert.equal(replacement.username,values.username);
+  assert.equal(f.s.one('SELECT state FROM applications WHERE id=?',f.app).state,'superseded');
+  assert.equal(f.s.one("SELECT state FROM jobs WHERE kind='whitelist' AND json_extract(payload,'$.applicationId')=?",f.app).state,'cancelled');
+  assert.match(f.responses.at(-1).content,/submitted to staff/i);
+});
+

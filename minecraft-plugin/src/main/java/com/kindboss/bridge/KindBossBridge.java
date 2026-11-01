@@ -473,7 +473,46 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
     private HttpRequest request(String path, String body) {
         return HttpRequest.newBuilder(URI.create(baseUrl+path)).timeout(Duration.ofSeconds(15)).header("Authorization", "Bearer "+secret).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build();
     }
-    private void post(String path, String body) { postWithReply(path, body, null); }
+    private void post(String path, String body) {
+        if (!configured(null)) {
+            getLogger().severe("Cannot send KIND BOSS event to " + path + ": bridge-url or bridge-secret is missing. Configure both in plugins/KindBossBridge/config.yml.");
+            return;
+        }
+        sendEventRequest(path, body, 0);
+    }
+
+    private void sendEventRequest(String path, String body, int attempt) {
+        http.sendAsync(request(path, body), HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> {
+            if (err == null && res.statusCode() >= 200 && res.statusCode() < 300) return;
+
+            String detail;
+            boolean retryable;
+            if (err != null) {
+                detail = err.getClass().getSimpleName() + ": " + String.valueOf(err.getMessage());
+                retryable = true;
+            } else {
+                String response = res.body() == null ? "" : res.body().replaceAll("[\\r\\n]+", " ");
+                if (response.length() > 300) response = response.substring(0, 300);
+                detail = "HTTP " + res.statusCode() + (response.isBlank() ? "" : ": " + response);
+                retryable = res.statusCode() == 429 || res.statusCode() >= 500;
+            }
+
+            if (err == null && (res.statusCode() == 401 || res.statusCode() == 403)) {
+                getLogger().severe("KIND BOSS rejected a live-MC event (" + detail + "). Make bridge-secret in plugins/KindBossBridge/config.yml exactly match BRIDGE_SECRET in Railway.");
+            } else {
+                getLogger().warning("KIND BOSS event delivery failed (" + detail + ").");
+            }
+
+            if (retryable && attempt < 3 && isEnabled()) {
+                long delayTicks = 40L << attempt;
+                Bukkit.getScheduler().runTaskLaterAsynchronously(this,
+                        () -> sendEventRequest(path, body, attempt + 1), delayTicks);
+            } else if (retryable) {
+                getLogger().severe("KIND BOSS event was not delivered after retries. Check bridge-url, bridge-secret, and Railway availability.");
+            }
+        });
+    }
+
     private void postWithReply(String path, String body, CommandSender sender) {
         if (!configured(sender)) return;
         http.sendAsync(request(path, body), HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> Bukkit.getScheduler().runTask(this, () -> {

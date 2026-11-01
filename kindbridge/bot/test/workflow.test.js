@@ -199,6 +199,32 @@ test('Permanent missing-account failures stop retrying and let the applicant cor
   assert.equal(s.one('SELECT state FROM applications WHERE id=?',corrected).state,'pending');
 });
 
+test('An approved whitelist request can be explicitly replaced after a name or edition correction',t=>{
+  const s=store(t),now=Date.now();
+  const original=submit(s,'u',input({username:'OldName'}),0,now);
+  decide(s,original,'staff',true,'',now);
+  const oldJob=s.one("SELECT id FROM jobs WHERE kind='whitelist' AND json_extract(payload,'$.applicationId')=?",original);
+  assert.throws(()=>submit(s,'u',input({username:'NewName'}),0,now+1),/awaiting review/);
+  const corrected=submit(s,'u',input({edition:'bedrock',username:'New Gamertag'}),0,now+2,{reapplyApproved:true});
+  assert.equal(s.one('SELECT state FROM applications WHERE id=?',original).state,'superseded');
+  assert.equal(s.one('SELECT state FROM jobs WHERE id=?',oldJob.id).state,'cancelled');
+  const replacement=s.one('SELECT state,edition,username FROM applications WHERE id=?',corrected);
+  assert.equal(replacement.state,'pending');
+  assert.equal(replacement.edition,'bedrock');
+  assert.equal(replacement.username,'New Gamertag');
+});
+
+test('Explicit reapply also replaces an approved application after a terminal account lookup failure',t=>{
+  const s=store(t),now=Date.now();
+  const original=submit(s,'u',input({edition:'bedrock',username:'Wrong Gamertag'}),0,now);
+  decide(s,original,'staff',true,'',now);
+  const job=s.lease(now);
+  s.ack(job.id,job.lease,false,{},'Xbox gamertag not found',now);
+  const corrected=submit(s,'u',input({edition:'bedrock',username:'Correct Gamertag'}),0,now+1,{reapplyApproved:true});
+  assert.equal(s.one('SELECT state FROM applications WHERE id=?',original).state,'superseded');
+  assert.equal(s.one('SELECT state FROM applications WHERE id=?',corrected).state,'pending');
+});
+
 test('Old queued unknown-account jobs are made terminal before another lease',t=>{
   const s=store(t),id=submit(s,'u',input(),0),appJob=(()=>{decide(s,id,'staff',true);return s.lease();})();
   s.ack(appJob.id,appJob.lease,false,{},'Java Minecraft account not found');
@@ -268,3 +294,4 @@ test('Account reapplication migration and pending replacement survive restart',(
     assert.equal(s.one("SELECT count(*) AS n FROM applications WHERE user_id='u' AND state='ready'").n,1); s.close();
   } finally { rmSync(dir,{recursive:true,force:true}); }
 });
+

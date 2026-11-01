@@ -74,7 +74,7 @@ const reapplyButtons = () => row(button('reapply:java','Reapply · Java'), butto
 const youtubeForm = () => form('application:youtube', 'Kind SMP application · 2 of 2', [['youtube', 'YouTube channel link (optional)', 200, false, false]]);
 
 export function createDiscord(store, c, yt, sharedClient = null) {
-  const client = sharedClient || new Client({ intents: [GatewayIntentBits.Guilds], allowedMentions: { parse: mentionEveryone ? ['everyone'] : [] } });
+  const client = sharedClient || new Client({ intents: [GatewayIntentBits.Guilds], allowedMentions: { parse: [] } });
   const notifications = createNotifications(store, c, client);
   async function staff(i) {
     if (i.guildId !== c.guild) throw new Error('Use this command in the Kind SMP Discord server.');

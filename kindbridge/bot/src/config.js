@@ -9,6 +9,7 @@ export function config(env = process.env) {
     publicUrl: (env.PUBLIC_URL || (env.RAILWAY_PUBLIC_DOMAIN ? `https://${env.RAILWAY_PUBLIC_DOMAIN}` : 'https://kind-boss-production.up.railway.app')).replace(/\/$/, ''), dataDir: env.DATA_DIR || './data',
     guild: env.GUILD_ID || '1555704317552361563', staffRoles: (env.STAFF_ROLE_IDS || '1555726622982668408').split(',').map(s => s.trim()),
     apply: env.APPLY_CHANNEL_ID || '1555722797475561543', log: env.LOG_CHANNEL_ID || '1555723400008302763',
+    bountyChannel: env.BOUNTY_CHANNEL_ID || '1566142441382346883', bountyStaffChannel: env.BOUNTY_STAFF_CHANNEL_ID || '1566146441452191906',
     memberRole: env.MEMBER_ROLE_ID || '1555723652627173416', youtubeRole: env.YOUTUBER_ROLE_ID || '1555723775691989033',
     rules: env.RULES_CHANNEL_ID || '1555706150488375296', scheduled: env.SCHEDULED_CHANNEL_ID || '1555724224297967756',
     shorts: env.SHORTS_CHANNEL_ID || '1555724261912748074', live: env.LIVE_CHANNEL_ID || '1555724180614287492',

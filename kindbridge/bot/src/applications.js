@@ -22,8 +22,7 @@ export function submit(store, userId, input, cooldown, now = Date.now(), { reapp
       store.run("UPDATE jobs SET state='cancelled',lease=NULL WHERE kind='whitelist' AND state IN ('queued','leased') AND json_extract(payload,'$.applicationId')=?", approved.id);
     }
     if (store.one("SELECT id FROM applications WHERE user_id=? AND state IN ('pending','approved')", userId)) throw new Error('You already have an application awaiting review or whitelisting. Use /status.');
-    const denied = store.one("SELECT decided FROM applications WHERE user_id=? AND state='rejected' ORDER BY decided DESC LIMIT 1", userId);
-    if (denied && now < denied.decided + cooldown) throw new Error(`You can reapply <t:${Math.ceil((denied.decided + cooldown) / 1000)}:R>.`);
+    // Rejected applicants may submit a corrected application immediately; active reviews stay protected above.
     if (store.one("SELECT id FROM applications WHERE edition=? AND username=? COLLATE NOCASE AND state IN ('pending','approved','ready')", a.edition, a.username)) throw new Error('That Minecraft account already has an active application. Ask staff if this is a mistake.');
     const previous = store.one("SELECT edition,username FROM applications WHERE user_id=? AND state='ready'", userId);
     if (previous) a.previousAccount = { edition: previous.edition, username: previous.username };

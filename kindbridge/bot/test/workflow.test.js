@@ -26,12 +26,12 @@ test('Duplicate people and accounts cannot create concurrent applications',t=>{
   assert.throws(()=>submit(s,'v',input({username:'kindplayer'}),0),/already/);
   assert.equal(s.one('SELECT count(*) AS n FROM applications').n,1);
 });
-test('Rejection needs a reason and reapplication waits 24 hours',t=>{
+test('Rejection requires a reason but applicants can immediately submit a corrected application',t=>{
   const s=store(t), now=1000000000, id=submit(s,'u',input(),86400000,now);
   assert.throws(()=>decide(s,id,'staff',false,''),/reason/);
   decide(s,id,'staff',false,'Please expand your answer.',now);
-  assert.throws(()=>submit(s,'u',input(),86400000,now+86399999),/reapply/);
-  assert.ok(submit(s,'u',input(),86400000,now+86400000));
+  const corrected=submit(s,'u',input({username:'CorrectedName'}),86400000,now+1);
+  assert.equal(s.one('SELECT state FROM applications WHERE id=?',corrected).state,'pending');
 });
 test('Approval is atomic, cannot be double-decided, and waits for whitelist acknowledgement',t=>{
   const s=store(t),id=submit(s,'u',input(),0); decide(s,id,'a',true);
@@ -222,14 +222,13 @@ test('Members can reapply while their current account stays accepted until white
   assert.equal(s.one('SELECT state FROM applications WHERE id=?',replacement).state,'ready');
   assert.ok(submit(s,'u',input({edition:'bedrock',username:'New Xbox'}),0));
 });
-test('Rejected or failed account changes preserve membership and enforce cooldown',t=>{
+test('Rejected or failed account changes preserve membership and have no cooldown',t=>{
   const s=store(t), old=ready(s), now=Date.now();
   assert.throws(()=>submit(s,'u',input(),0),/already has an active/);
   const rejected=submit(s,'u',input({username:'NewAccount'}),0,now);
   decide(s,rejected,'staff',false,'Please confirm ownership.',now);
   assert.equal(s.one('SELECT state FROM applications WHERE id=?',old).state,'ready');
-  assert.throws(()=>submit(s,'u',input({username:'NewAccount'}),86400000,now+1),/reapply/);
-  const replacement=submit(s,'u',input({username:'NewAccount'}),0,now+2);
+  const replacement=submit(s,'u',input({username:'NewAccount'}),86400000,now+1);
   decide(s,replacement,'staff',true); const job=s.lease();
   s.ack(job.id,job.lease,false,{},'Lookup unavailable');
   assert.equal(s.one('SELECT state FROM applications WHERE id=?',old).state,'ready');

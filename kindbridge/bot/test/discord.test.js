@@ -199,3 +199,13 @@ for (const edition of ['java','bedrock']) test(`An approved applicant can click 
   assert.equal(f.s.one("SELECT state FROM jobs WHERE kind='whitelist' AND json_extract(payload,'$.applicationId')=?",f.app).state,'cancelled');
   assert.match(f.responses.at(-1).content,/submitted to staff/i);
 });
+test('Rejected applicants can reapply immediately according to /status',async t=>{
+  const f=fixture(t);
+  decide(f.s,f.app,'staff',false,'Please correct your account name.');
+  f.i.user.id='applicant';
+  f.i.isChatInputCommand=()=>true; f.i.isButton=()=>false; f.i.isModalSubmit=()=>false;
+  f.i.customId=undefined; f.i.commandName='status';
+  await f.handle(f.i);
+  assert.match(f.responses.at(-1).content,/use \/apply again right away/i);
+  assert.doesNotMatch(f.responses.at(-1).content,/in a day|<t:/i);
+});

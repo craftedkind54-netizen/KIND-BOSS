@@ -17,6 +17,8 @@ async function readBody(req, limit = 262144) {
   }
   return Buffer.concat(chunks);
 }
+const validMinecraftName = value => typeof value === 'string' && /^[\p{L}\p{N}_. -]{1,32}$/u.test(value) && value.trim().length > 0;
+
 export function server(store, c, youtube, ready = () => true) {
   return createServer(async (req, res) => {
     const reply = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
@@ -48,6 +50,47 @@ export function server(store, c, youtube, ready = () => true) {
       }
       if (u.pathname.startsWith('/bridge/')) {
         if (!equalSecret(req.headers.authorization, `Bearer ${c.kindBridgeSecret || c.secret}`)) return reply(401, { error: 'Unauthorized' });
+        if (u.pathname === '/bridge/bounties' && req.method === 'POST') {
+          const body = JSON.parse((await readBody(req, 200000)).toString());
+          if (!/^[0-9a-f-]{36}$/i.test(body.id || '') || !/^[0-9a-f-]{36}$/i.test(body.posterUuid || '') ||
+              !/^[0-9a-f-]{36}$/i.test(body.targetUuid || '') || body.posterUuid === body.targetUuid ||
+              !validMinecraftName(body.posterName) || !validMinecraftName(body.targetName) ||
+              !Number.isSafeInteger(body.levels) || body.levels < 0 || !Array.isArray(body.items) || body.items.length > (body.ownerEvent === true ? 27 : 3) ||
+              !Number.isSafeInteger(body.created) || !Number.isSafeInteger(body.expires) || body.expires <= body.created) {
+            return reply(400, { error: 'Invalid bounty request' });
+          }
+          try { store.submitBounty(body); }
+          catch (e) { return reply(409, { error: e.message }); }
+          const state = store.one('SELECT state FROM bounties WHERE id=?', body.id)?.state || 'pending';
+          return reply(202, { ok: true, id: body.id, state });
+        }
+        if (u.pathname === '/bridge/bounties/actions' && req.method === 'GET') {
+          const limitValue = Number(u.searchParams.get('limit') || 20);
+          if (!Number.isSafeInteger(limitValue)) return reply(400, { error: 'Invalid action limit' });
+          const limit = Math.min(50, Math.max(1, limitValue));
+          const actions = store.all('SELECT id,bounty_id,action,reviewer_id,created FROM bounty_actions WHERE acknowledged=0 ORDER BY id LIMIT ?', limit)
+            .map(a => ({ id: a.id, bountyId: a.bounty_id, action: a.action, reviewer: a.reviewer_id, created: a.created }));
+          return reply(200, { actions });
+        }
+        if (u.pathname === '/bridge/bounties/actions/ack' && req.method === 'POST') {
+          const body = JSON.parse((await readBody(req)).toString());
+          if (!Number.isSafeInteger(body.id) || body.id < 1) return reply(400, { error: 'Invalid action id' });
+          store.run('UPDATE bounty_actions SET acknowledged=1 WHERE id=?', body.id);
+          return reply(200, { ok: true });
+        }
+        if (u.pathname === '/bridge/bounties/update' && req.method === 'POST') {
+          const body = JSON.parse((await readBody(req, 200000)).toString());
+          if (!/^[0-9a-f-]{36}$/i.test(body.id || '') || !['active','claimed','expired','refunded','rejected','cancelled'].includes(body.state)) {
+            return reply(400, { error: 'Invalid bounty update' });
+          }
+          const row = store.one('SELECT id,state FROM bounties WHERE id=?', body.id);
+          if (!row) return reply(404, { error: 'Unknown bounty' });
+          const transitions = { pending: ['active','cancelled'], approved: ['active','rejected','cancelled'], active: ['claimed','expired','refunded','cancelled'], claimed: ['claimed'], expired: ['expired'], refunded: ['refunded'], rejected: ['rejected'], cancelled: ['cancelled'] };
+          if (!transitions[row.state]?.includes(body.state)) return reply(409, { error: `Invalid bounty transition ${row.state} -> ${body.state}` });
+          const previous=JSON.parse(store.one('SELECT result FROM bounties WHERE id=?',body.id).result || '{}');
+          store.run('UPDATE bounties SET state=?,result=?,discord_dirty=1 WHERE id=?', body.state, JSON.stringify({...previous,...body}), body.id);
+          return reply(200, { ok: true });
+        }
         if (u.pathname === '/bridge/jobs' && req.method === 'GET') { store.set('bridgeSeen', Date.now()); return reply(200, { job: store.lease() }); }
         if (u.pathname === '/bridge/ack' && req.method === 'POST') {
           const body = JSON.parse((await readBody(req)).toString());

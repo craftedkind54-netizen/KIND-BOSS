@@ -10,11 +10,17 @@ export function validateApplication(a) {
   if (a.youtube && !/^https:\/\/(www\.)?youtube\.com\/(channel\/UC[\w-]{22}|@[\w.%-]+)\/?$/i.test(a.youtube)) throw new Error('Use a YouTube channel URL such as https://www.youtube.com/@YourHandle, or leave it blank.');
   return a;
 }
-export function submit(store, userId, input, cooldown, now = Date.now()) {
+export function submit(store, userId, input, cooldown, now = Date.now(), { reapplyApproved = false } = {}) {
   const a = validateApplication(input);
   return store.transaction(() => {
     // Let an applicant correct a Minecraft name after a permanent lookup failure.
-    store.run("UPDATE applications SET state='superseded',notification_done=0 WHERE user_id=? AND state='approved' AND EXISTS (SELECT 1 FROM jobs WHERE kind='whitelist' AND state='failed' AND json_extract(payload,'$.applicationId')=applications.id AND (instr(lower(coalesce(error,'')),'account not found')>0 OR instr(lower(coalesce(error,'')),'gamertag not found')>0))", userId);
+    if (!reapplyApproved) store.run("UPDATE applications SET state='superseded',notification_done=0 WHERE user_id=? AND state='approved' AND EXISTS (SELECT 1 FROM jobs WHERE kind='whitelist' AND state='failed' AND json_extract(payload,'$.applicationId')=applications.id AND (instr(lower(coalesce(error,'')),'account not found')>0 OR instr(lower(coalesce(error,'')),'gamertag not found')>0))", userId);
+    if (reapplyApproved) {
+      const approved = store.one("SELECT id FROM applications WHERE user_id=? AND state='approved' ORDER BY created DESC,rowid DESC LIMIT 1", userId);
+      if (!approved) throw new Error('There is no approved whitelist request to replace. Use /apply to start an application.');
+      store.run("UPDATE applications SET state='superseded',notification_done=0 WHERE id=? AND state='approved'", approved.id);
+      store.run("UPDATE jobs SET state='cancelled',lease=NULL WHERE kind='whitelist' AND state IN ('queued','leased') AND json_extract(payload,'$.applicationId')=?", approved.id);
+    }
     if (store.one("SELECT id FROM applications WHERE user_id=? AND state IN ('pending','approved')", userId)) throw new Error('You already have an application awaiting review or whitelisting. Use /status.');
     const denied = store.one("SELECT decided FROM applications WHERE user_id=? AND state='rejected' ORDER BY decided DESC LIMIT 1", userId);
     if (denied && now < denied.decided + cooldown) throw new Error(`You can reapply <t:${Math.ceil((denied.decided + cooldown) / 1000)}:R>.`);

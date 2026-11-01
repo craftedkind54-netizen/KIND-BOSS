@@ -5,6 +5,7 @@ import { submit, decide, joining } from './applications.js';
 import { quotaDay, channelTarget } from './youtube.js';
 import { createNotifications } from './notifications.js';
 import { isOwnedApplicationPanel } from './applicationPanelPolicy.js';
+import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 const ephemeral = MessageFlags.Ephemeral;
@@ -33,40 +34,39 @@ function applicationPanelBody(c) {
 }
 function bountyContent(row, c, state = row.state, result = {}) {
   const data = JSON.parse(row.payload);
-  const rewardItems = (data.items || []).map(item => `${item.amount} × ${item.name || item.material}`).join('\n') || 'No item reward';
+  const items = data.items || [];
+  const rewardLines = [
+    Number(data.levels) > 0 ? `${data.levels} kill levels` : null,
+    ...items.map(item => `${item.amount} × ${item.name || item.material}`)
+  ].filter(Boolean);
   const embed = new EmbedBuilder().setColor(state === 'active' ? 0xf1b83b : state === 'claimed' ? 0x57f287 : 0x777777)
     .setTitle(`Kind SMP bounty · ${row.id.slice(0,8)}`)
-    .setDescription(`**Target:** ${row.target_name}\n**Posted by:** ${row.poster_name}\n**Kill-level reward:** ${data.levels}`)
-    .addFields({name:'Type',value:data.ownerEvent ? 'Owner event bounty' : 'Player bounty'},{name:'Items in escrow',value:rewardItems},{name:'Expires',value:`<t:${Math.floor(row.expires/1000)}:F>`})
+    .setDescription(`**Target:** ${row.target_name}\n**Posted by:** ${row.poster_name}\n\n**Reward**\n${rewardLines.join('\n') || 'No reward listed'}\n\n**Tracking compass:** Open \`/check bounty\` and click the target’s head to receive one.`)
+    .addFields(
+      {name:'Type',value:data.ownerEvent ? 'Owner event bounty' : 'Player bounty',inline:true},
+      {name:'Expires',value:`<t:${Math.floor(row.expires/1000)}:F>`,inline:true}
+    )
     .setThumbnail(`https://mc-heads.net/avatar/${row.target_uuid}/128`);
-  const first = (data.items || []).find(item => item.material);
-  if (first) {
-    const texture = String(first.material).toLowerCase();
-    embed.setImage(`https://mcasset.cloud/1.21.11/assets/minecraft/textures/item/${encodeURIComponent(texture)}.png`);
-  }
-  const files=[], embeds=[embed];
-  for (const [index,item] of (data.items || []).slice(0,data.levelsIcon ? 8 : 9).entries()) {
-    let image;
-    if (item.icon && /^[A-Za-z0-9+/=]+$/.test(item.icon)) {
-      const filename=`bounty-item-${index}.png`;
-      files.push(new AttachmentBuilder(Buffer.from(item.icon,'base64'),{name:filename}));
-      image=`attachment://${filename}`;
-    } else if (item.material) {
-      image=`https://mcasset.cloud/1.21.11/assets/minecraft/textures/item/${encodeURIComponent(String(item.material).toLowerCase())}.png`;
-    }
-    if (image) embeds.push(new EmbedBuilder().setColor(0x9b59b6).setTitle(`${item.amount} × ${item.name || item.material}`).setImage(image));
-  }
-  if (data.levelsIcon && /^[A-Za-z0-9+/=]+$/.test(data.levelsIcon)) {
-    const filename='bounty-kill-level-token.png';
-    files.push(new AttachmentBuilder(Buffer.from(data.levelsIcon,'base64'),{name:filename}));
-    embeds.push(new EmbedBuilder().setColor(0xe6b422).setTitle(`${data.levels} kill levels`).setImage(`attachment://${filename}`));
+  const featured = items.find(item => /dragonheart\s*mace|mace/i.test(`${item.name || ''} ${item.material || ''}`)) || items[0];
+  const files = [];
+  if (featured && /dragonheart\s*mace|mace/i.test(`${featured.name || ''} ${featured.material || ''}`)) {
+    files.push(new AttachmentBuilder(readFileSync(new URL('./assets/bounty/dragonheart-mace.png', import.meta.url)), {name:'dragonheart-mace.png'}));
+    embed.setImage('attachment://dragonheart-mace.png');
+  } else if (featured?.icon && /^[A-Za-z0-9+/=]+$/.test(featured.icon)) {
+    files.push(new AttachmentBuilder(Buffer.from(featured.icon, 'base64'), {name:'bounty-reward.png'}));
+    embed.setImage('attachment://bounty-reward.png');
+  } else if (featured?.material) {
+    embed.setImage(`https://mcasset.cloud/1.21.11/assets/minecraft/textures/item/${encodeURIComponent(String(featured.material).toLowerCase())}.png`);
+  } else if (data.levelsIcon && /^[A-Za-z0-9+/=]+$/.test(data.levelsIcon)) {
+    files.push(new AttachmentBuilder(Buffer.from(data.levelsIcon, 'base64'), {name:'bounty-kill-level-token.png'}));
+    embed.setImage('attachment://bounty-kill-level-token.png');
   }
   if (state === 'claimed') embed.addFields({name:'Result',value:`Claimed by ${result.winnerName || 'a player'}`});
   else if (state === 'expired') embed.addFields({name:'Result',value:result.winnerName ? `Expired after the target survived; reward delivered to ${result.winnerName}.` : 'The bounty expired.'});
   else if (state === 'refunded') embed.addFields({name:'Result',value:`Expired; reward returned to ${row.poster_name}.`});
   else if (state === 'rejected') embed.addFields({name:'Result',value:'Not approved by staff.'});
   else if (state === 'cancelled') embed.addFields({name:'Result',value:`Withdrawn by ${row.poster_name}; escrow returned.`});
-  return {embeds,files};
+  return {embeds:[embed],files};
 }
 
 // Only used to finish drafts opened before the single-form update.

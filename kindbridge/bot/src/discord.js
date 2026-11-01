@@ -91,7 +91,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
       }
     }
     const nonce = key ? createHash('sha256').update(key).digest('hex').slice(0,24) : undefined;
-    return channel.send({ ...body, ...(nonce ? {nonce, enforceNonce: true} : {}), allowedMentions: { parse: [] } });
+    return channel.send({ ...body, ...(nonce ? {nonce, enforceNonce: true} : {}), allowedMentions: { parse: mentionEveryone ? ['everyone'] : [] } });
   }
   const uneditableMessageCodes = new Set(['10008', '50005', '50001', '50013']);
   function applicationOutcome(app) {

@@ -8,6 +8,7 @@ import org.bukkit.plugin.Plugin;
 import org.bukkit.entity.Player;
 import org.bukkit.event.*;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerAdvancementDoneEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
@@ -20,7 +21,9 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -31,6 +34,8 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
     private boolean strikePollBusy;
     private boolean staffRankPollBusy;
     private boolean appealReversalPollBusy;
+    private boolean teamSyncBusy;
+    private boolean bountyPollBusy;
     private final PlainTextComponentSerializer plain = PlainTextComponentSerializer.plainText();
 
     @Override public void onEnable() {
@@ -48,6 +53,10 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         Bukkit.getScheduler().runTaskTimer(this, () -> {
             postActivePlayerSample();
         }, 40L, 400L);
+        // Reconcile team Discord rooms at startup and periodically so newly
+        // approved application links receive access even if no team command ran.
+        Bukkit.getScheduler().runTaskTimer(this, this::postTeamSnapshot, 100L, 12000L);
+        Bukkit.getScheduler().runTaskTimerAsynchronously(this, this::pollBountyActions, 120L, 100L);
         postEvent("server_online", null, null);
         getLogger().info("KIND BOSS bridge + activity feed enabled for Paper 1.21.11.");
     }
@@ -74,6 +83,16 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         Bukkit.getScheduler().runTask(this, this::postActivePlayerSample);
     }
 
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onTeamCommand(PlayerCommandPreprocessEvent event) {
+        String[] parts = event.getMessage().trim().replaceFirst("^/", "").split("\\s+");
+        if (parts.length < 2 || !parts[0].equalsIgnoreCase("team")) return;
+        String action = parts[1].toLowerCase(Locale.ROOT);
+        if (!List.of("create", "join", "leave", "kick", "disband", "invite").contains(action)) return;
+        // Let CraftedCore finish changing its saved membership before reading it.
+        Bukkit.getScheduler().runTaskLater(this, this::postTeamSnapshot, 1L);
+    }
+
     @EventHandler public void onAdvancement(PlayerAdvancementDoneEvent e) {
         AdvancementDisplay display = e.getAdvancement().getDisplay();
         if (display == null || !display.doesAnnounceToChat()) return;
@@ -95,6 +114,151 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
 
     private void postActivePlayerSample() {
         post("/api/v1/minecraft/event", "{\"type\":\"active_sample\",\"onlinePlayers\":" + Bukkit.getOnlinePlayers().size() + "}");
+    }
+
+    private void postTeamSnapshot() {
+        if (teamSyncBusy || !configured(null)) return;
+        try {
+            Plugin core = kindCorePlugin();
+            if (core == null || !core.isEnabled()) return;
+            // CraftedCore keeps its shared store in a superclass. Search the
+            // whole hierarchy instead of only CraftedCore145 itself.
+            Field storeField = findField(core.getClass(), "store");
+            storeField.setAccessible(true);
+            Object store = storeField.get(core);
+            Field dataField = store.getClass().getDeclaredField("data");
+            dataField.setAccessible(true);
+            Object data = dataField.get(store);
+            Method sectionMethod = data.getClass().getMethod("getConfigurationSection", String.class);
+            Object teamsSection = sectionMethod.invoke(data, "teams");
+            List<String> teamKeys = teamsSection == null ? List.of() : new ArrayList<>((Collection<String>) teamsSection.getClass().getMethod("getKeys", boolean.class).invoke(teamsSection, false));
+            StringBuilder body = new StringBuilder("{\"type\":\"team_sync\",\"teams\":[");
+            boolean firstTeam = true;
+            for (String key : teamKeys) {
+                String root = "teams." + key;
+                String rawId = (String) data.getClass().getMethod("getString", String.class).invoke(data, root + ".id");
+                UUID teamId = rawId == null ? UUID.nameUUIDFromBytes(("kind-smp-team:" + key).getBytes(StandardCharsets.UTF_8)) : UUID.fromString(rawId);
+                Collection<String> members = (Collection<String>) data.getClass().getMethod("getStringList", String.class).invoke(data, root + ".members");
+                if (!firstTeam) body.append(',');
+                firstTeam = false;
+                body.append("{\"id\":\"").append(esc(teamId.toString())).append("\",\"name\":\"").append(esc(key.toLowerCase(Locale.ROOT))).append("\",\"members\":[");
+                boolean firstMember = true;
+                for (String rawMember : members) {
+                    UUID memberId;
+                    try { memberId = UUID.fromString(rawMember); } catch (IllegalArgumentException ignored) { continue; }
+                    String username = (String) data.getClass().getMethod("getString", String.class).invoke(data, "players." + memberId + ".name");
+                    if (username == null || !username.matches("[A-Za-z0-9_]{1,16}")) {
+                        Player online = Bukkit.getPlayer(memberId);
+                        username = online == null ? null : online.getName();
+                    }
+                    if (username == null || !username.matches("[A-Za-z0-9_]{1,16}")) continue;
+                    if (!firstMember) body.append(',');
+                    firstMember = false;
+                    body.append("{\"uuid\":\"").append(memberId).append("\",\"username\":\"").append(esc(username)).append("\"}");
+                }
+                body.append("]}");
+            }
+            body.append("]}");
+            teamSyncBusy = true;
+            HttpRequest req = request("/api/v1/minecraft/event", body.toString());
+            http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> {
+                teamSyncBusy = false;
+                if (err != null) getLogger().fine("Team Discord sync failed: " + err.getMessage());
+                else if (res.statusCode() < 200 || res.statusCode() >= 300) getLogger().warning("Team Discord sync returned HTTP " + res.statusCode() + ".");
+            });
+        } catch (Exception e) {
+            getLogger().warning("Could not read CraftedCore team membership for Discord sync: " + e.getMessage());
+        }
+    }
+
+    private static Field findField(Class<?> type, String name) throws NoSuchFieldException {
+        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+            try {
+                return current.getDeclaredField(name);
+            } catch (NoSuchFieldException ignored) {
+                // Continue through CraftedCore's parent classes.
+            }
+        }
+        throw new NoSuchFieldException(name);
+    }
+
+    /** Public reflection API used by KindCore; the bridge owns the Railway secret. */
+    public void submitBounty(String json) {
+        if (json == null || json.length() > 180000 || !configured(null)) return;
+        HttpRequest req = request("/bridge/bounties", json);
+        http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> {
+            if (err != null) getLogger().warning("Bounty submission could not reach KIND BOSS: " + err.getMessage());
+            else if (res.statusCode() < 200 || res.statusCode() >= 300) getLogger().warning("Bounty submission rejected by KIND BOSS (HTTP " + res.statusCode() + "): " + res.body());
+        });
+    }
+
+    /** Public reflection API used by KindCore to publish a claim/expiry/refund result. */
+    public void updateBounty(String json) {
+        if (json == null || json.length() > 180000 || !configured(null)) return;
+        http.sendAsync(request("/bridge/bounties/update", json), HttpResponse.BodyHandlers.ofString())
+            .whenComplete((res, err) -> {
+                if (err != null || res.statusCode() < 200 || res.statusCode() >= 300)
+                    getLogger().warning("Bounty status update could not be delivered; it will be retried by KindCore.");
+            });
+    }
+
+    private void pollBountyActions() {
+        if (bountyPollBusy || !configured(null)) return;
+        bountyPollBusy = true;
+        HttpRequest req = HttpRequest.newBuilder(URI.create(baseUrl + "/bridge/bounties/actions?limit=20"))
+            .timeout(Duration.ofSeconds(15)).header("Authorization", "Bearer " + secret).GET().build();
+        http.sendAsync(req, HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> {
+            if (err != null || res.statusCode() < 200 || res.statusCode() >= 300) {
+                bountyPollBusy = false;
+                if (err != null) getLogger().fine("Bounty action poll failed: " + err.getMessage());
+                return;
+            }
+            try {
+                List<String> actions = jsonObjects(res.body(), "actions");
+                if (actions.isEmpty()) { bountyPollBusy = false; return; }
+                Bukkit.getScheduler().runTask(this, () -> processBountyActions(actions));
+            } catch (Exception e) {
+                bountyPollBusy = false;
+                getLogger().warning("Could not read bounty approval actions: " + e.getMessage());
+            }
+        });
+    }
+
+    private void processBountyActions(List<String> actions) {
+        for (String action : actions) {
+            long id = jsonNumber(action, "id", -1L);
+            String bountyId = jsonString(action, "bountyId"), decision = jsonString(action, "action"), reviewer = jsonString(action, "reviewer");
+            boolean done = false;
+            try {
+                Plugin core = kindCorePlugin();
+                if (core != null && core.isEnabled() && bountyId != null && decision != null && reviewer != null) {
+                    // The decision method belongs to KindCore's BountyManager,
+                    // not the top-level plugin class.
+                    Field bountiesField = findField(core.getClass(), "bounties");
+                    bountiesField.setAccessible(true);
+                    Object bounties = bountiesField.get(core);
+                    if (bounties == null) throw new NoSuchFieldException("bounties manager is not ready");
+                    Method decisionMethod = bounties.getClass().getDeclaredMethod("handleBountyDecision", String.class, String.class, String.class);
+                    decisionMethod.setAccessible(true);
+                    Object result = decisionMethod.invoke(bounties, bountyId, decision, reviewer);
+                    done = Boolean.TRUE.equals(result);
+                }
+            } catch (ReflectiveOperationException | LinkageError e) {
+                getLogger().warning("KindCore could not process bounty decision " + id + ": " + e.getMessage());
+            }
+            if (!done) break;
+            acknowledgeBountyAction(id);
+        }
+        bountyPollBusy = false;
+    }
+
+    private void acknowledgeBountyAction(long id) {
+        String body = "{\"id\":" + id + "}";
+        http.sendAsync(request("/bridge/bounties/actions/ack", body), HttpResponse.BodyHandlers.discarding())
+            .whenComplete((res, err) -> {
+                if (err != null || res.statusCode() < 200 || res.statusCode() >= 300)
+                    getLogger().warning("Bounty decision acknowledgement failed for action " + id + "; it may be retried.");
+            });
     }
 
     /** Sends a staff-mode command audit entry through the authenticated shared API. */
@@ -200,7 +364,6 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
             long id = jsonNumber(action, "id", -1L);
             long applicationId = jsonNumber(action, "applicationId", -1L);
             String username = jsonString(action, "username");
-            String minecraftUuid = jsonString(action, "minecraftUuid");
             String targetRank = jsonString(action, "targetRank");
             String minecraftRank = jsonString(action, "minecraftRank");
             String expectedRank = switch (targetRank == null ? "" : targetRank) {
@@ -212,85 +375,18 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
                 case "owner" -> "owner";
                 default -> null;
             };
-            boolean success = false;
-            String error = "Invalid rank action payload";
-            if (id > 0 && applicationId > 0 && username != null && username.matches("[A-Za-z0-9_]{1,16}")
-                    && minecraftUuid != null && expectedRank != null && expectedRank.equals(minecraftRank)) {
-                try {
-                    UUID targetUuid = UUID.fromString(minecraftUuid);
-                    UUID knownUuid = kindCoreKnownUuid(username);
-                    if (!targetUuid.equals(knownUuid)) {
-                        throw new IllegalStateException("Linked Minecraft UUID does not match KindCore's saved player record for " + username);
-                    }
-                    String command = "rank set " + username + " " + minecraftRank;
-                    if (!Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command)) {
-                        throw new IllegalStateException("KindCore did not dispatch /rank set");
-                    }
-                    String appliedRank = readKindCoreRank(targetUuid);
-                    success = minecraftRank.equals(appliedRank);
-                    if (!success) throw new IllegalStateException("KindCore still reports rank " + appliedRank + " after the promotion command");
-                    error = "";
-                    getLogger().info("Verified staff rank " + minecraftRank + " for " + username + " (application #" + applicationId + ").");
-                } catch (Exception e) {
-                    error = rootMessage(e);
-                    getLogger().warning("Could not apply staff rank for " + username + " (application #" + applicationId + "): " + error);
-                }
+            boolean success = id > 0 && applicationId > 0 && username != null && username.matches("[A-Za-z0-9_]{1,16}")
+                    && expectedRank != null && expectedRank.equals(minecraftRank);
+            String error = success ? "" : "Invalid rank action payload";
+            if (success) {
+                String command = "rank set " + username + " " + minecraftRank;
+                success = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
+                if (!success) error = "CraftedCore did not accept /rank set";
+                else getLogger().info("Submitted approved staff rank " + minecraftRank + " for " + username + " (application #" + applicationId + ").");
             }
             acknowledgeStaffRankAction(id, success, error);
         }
         staffRankPollBusy = false;
-    }
-
-    private UUID kindCoreKnownUuid(String username) throws Exception {
-        Plugin kindCore = requireKindCore();
-        Method known = findMethod(kindCore.getClass(), "known", String.class);
-        Object result = known.invoke(kindCore, username);
-        if (!(result instanceof UUID uuid)) throw new IllegalStateException("KindCore returned no UUID for " + username);
-        return uuid;
-    }
-
-    private String readKindCoreRank(UUID playerId) throws Exception {
-        Plugin kindCore = requireKindCore();
-        Field ranksField = findField(kindCore.getClass(), "ranks");
-        Object ranks = ranksField.get(kindCore);
-        if (ranks == null) throw new IllegalStateException("KindCore rank service is not ready");
-        Method rank = findMethod(ranks.getClass(), "rank", UUID.class);
-        Object result = rank.invoke(ranks, playerId);
-        if (!(result instanceof String value)) throw new IllegalStateException("KindCore returned no rank for " + playerId);
-        return value;
-    }
-
-    private Plugin requireKindCore() {
-        Plugin kindCore = Bukkit.getPluginManager().getPlugin("KindCore");
-        if (kindCore == null || !kindCore.isEnabled()) throw new IllegalStateException("KindCore is not enabled");
-        return kindCore;
-    }
-
-    private static Field findField(Class<?> type, String name) throws NoSuchFieldException {
-        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
-            try {
-                Field field = current.getDeclaredField(name);
-                field.setAccessible(true);
-                return field;
-            } catch (NoSuchFieldException ignored) { }
-        }
-        throw new NoSuchFieldException(type.getName() + "." + name);
-    }
-
-    private static Method findMethod(Class<?> type, String name, Class<?>... parameters) throws NoSuchMethodException {
-        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
-            try {
-                Method method = current.getDeclaredMethod(name, parameters);
-                method.setAccessible(true);
-                return method;
-            } catch (NoSuchMethodException ignored) { }
-        }
-        throw new NoSuchMethodException(type.getName() + "." + name);
-    }
-
-    private static String rootMessage(Exception error) {
-        Throwable cause = error.getCause() == null ? error : error.getCause();
-        return cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
     }
 
     private void acknowledgeStaffRankAction(long id, boolean success, String error) {
@@ -442,7 +538,7 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
     private boolean isStaffSender(CommandSender sender) {
         if (sender instanceof ConsoleCommandSender || sender instanceof RemoteConsoleCommandSender) return true;
         if (!(sender instanceof Player player)) return false;
-        Plugin core = Bukkit.getPluginManager().getPlugin("CraftedCore");
+        Plugin core = kindCorePlugin();
         if (core == null || !core.isEnabled()) return false;
         try { return Boolean.TRUE.equals(core.getClass().getMethod("canManageStrikes", UUID.class).invoke(core, player.getUniqueId())); }
         catch (ReflectiveOperationException | LinkageError ex) { return false; }
@@ -473,46 +569,7 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
     private HttpRequest request(String path, String body) {
         return HttpRequest.newBuilder(URI.create(baseUrl+path)).timeout(Duration.ofSeconds(15)).header("Authorization", "Bearer "+secret).header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build();
     }
-    private void post(String path, String body) {
-        if (!configured(null)) {
-            getLogger().severe("Cannot send KIND BOSS event to " + path + ": bridge-url or bridge-secret is missing. Configure both in plugins/KindBossBridge/config.yml.");
-            return;
-        }
-        sendEventRequest(path, body, 0);
-    }
-
-    private void sendEventRequest(String path, String body, int attempt) {
-        http.sendAsync(request(path, body), HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> {
-            if (err == null && res.statusCode() >= 200 && res.statusCode() < 300) return;
-
-            String detail;
-            boolean retryable;
-            if (err != null) {
-                detail = err.getClass().getSimpleName() + ": " + String.valueOf(err.getMessage());
-                retryable = true;
-            } else {
-                String response = res.body() == null ? "" : res.body().replaceAll("[\\r\\n]+", " ");
-                if (response.length() > 300) response = response.substring(0, 300);
-                detail = "HTTP " + res.statusCode() + (response.isBlank() ? "" : ": " + response);
-                retryable = res.statusCode() == 429 || res.statusCode() >= 500;
-            }
-
-            if (err == null && (res.statusCode() == 401 || res.statusCode() == 403)) {
-                getLogger().severe("KIND BOSS rejected a live-MC event (" + detail + "). Make bridge-secret in plugins/KindBossBridge/config.yml exactly match BRIDGE_SECRET in Railway.");
-            } else {
-                getLogger().warning("KIND BOSS event delivery failed (" + detail + ").");
-            }
-
-            if (retryable && attempt < 3 && isEnabled()) {
-                long delayTicks = 40L << attempt;
-                Bukkit.getScheduler().runTaskLaterAsynchronously(this,
-                        () -> sendEventRequest(path, body, attempt + 1), delayTicks);
-            } else if (retryable) {
-                getLogger().severe("KIND BOSS event was not delivered after retries. Check bridge-url, bridge-secret, and Railway availability.");
-            }
-        });
-    }
-
+    private void post(String path, String body) { postWithReply(path, body, null); }
     private void postWithReply(String path, String body, CommandSender sender) {
         if (!configured(sender)) return;
         http.sendAsync(request(path, body), HttpResponse.BodyHandlers.ofString()).whenComplete((res, err) -> Bukkit.getScheduler().runTask(this, () -> {
@@ -545,5 +602,10 @@ public final class KindBossBridge extends JavaPlugin implements Listener, Comman
         if (!ok && sender != null) sender.sendMessage("§cConfigure bridge-url and bridge-secret in plugins/KindBossBridge/config.yml");
         return ok;
     }
+    private Plugin kindCorePlugin() {
+        Plugin core = Bukkit.getPluginManager().getPlugin("KindCore");
+        return core != null ? core : Bukkit.getPluginManager().getPlugin("CraftedCore");
+    }
     private static String esc(String s) { return s.replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n").replace("\r","\\r"); }
 }
+

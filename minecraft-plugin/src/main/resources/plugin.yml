@@ -1,8 +1,10 @@
 name: KindBossBridge
-version: 1.2.4
+version: 1.2.7
 main: com.kindboss.bridge.KindBossBridge
 api-version: '1.21'
 author: KIND BOSS
+softdepend:
+  - KindCore
 commands:
   strike:
     description: Manage KIND SMP strikes
@@ -13,3 +15,4 @@ permissions:
     # Rank checks run through CraftedCore's canManageStrikes API in the executor.
     # Keep the Bukkit permission open so General Staff are not blocked by op status.
     default: true
+

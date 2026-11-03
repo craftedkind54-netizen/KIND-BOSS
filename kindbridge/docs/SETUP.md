@@ -42,6 +42,8 @@ The bot uses Discord's gateway connection. Leave the Interactions Endpoint URL b
 
 Generate a bridge secret with your password manager. If using Node locally, this command generates one: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Store it in Railway and the private Minecraft plugin configuration only.
 
+Use only `BRIDGE_SECRET` for every Minecraft-to-KIND BOSS request. Remove the obsolete `KIND_BRIDGE_SECRET` Railway variable after the updated bot is deployed. In MineKeep, put the `BRIDGE_SECRET` value in `plugins/KindBossBridge/config.yml` under `bridge-secret` while the SMP is stopped. KindCore does not store a separate bridge key; it sends bounty updates through KindBossBridge.
+
 All your Discord IDs are already defaults in the code. `.env.example` lists every optional override; it is a reference and is not loaded automatically on Railway. Ordinary videos and Shorts both default to `1555724261912748074`.
 
 You can initially leave `YOUTUBE_API_KEY` blank while testing applications. YouTube features remain unavailable until it is set. `DISCORD_TOKEN`, `BRIDGE_SECRET` and `PUBLIC_URL` are required to start.

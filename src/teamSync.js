@@ -30,7 +30,7 @@ const COLOR_ALIASES = Object.freeze({ purple: 'dark_purple', pink: 'light_purple
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TEAM_NAME_RE = /^[\p{L}\p{N}_ .-]{1,32}$/u;
-const MC_NAME_RE = /^[A-Za-z0-9_]{1,16}$/;
+const MC_NAME_RE = /^\.?[A-Za-z0-9_]{1,16}$/;
 
 function normalizeColor(value) {
   if (typeof value !== 'string' || !value.trim()) return null;

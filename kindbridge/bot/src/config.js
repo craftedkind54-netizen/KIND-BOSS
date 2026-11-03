@@ -26,6 +26,6 @@ export function config(env = process.env) {
 }
 export function validateConfig(c) {
   if (!c.token) throw new Error('Set DISCORD_TOKEN in Railway variables.');
-  if (c.kindBridgeSecret.length < 32) throw new Error('KIND_BRIDGE_SECRET (or legacy BRIDGE_SECRET) must be at least 32 characters.');
+  if (c.secret.length < 32) throw new Error('BRIDGE_SECRET must be at least 32 characters.');
   if (!/^https:\/\//.test(c.publicUrl)) throw new Error('PUBLIC_URL must be the Railway HTTPS URL.');
 }

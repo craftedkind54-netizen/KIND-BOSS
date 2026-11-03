@@ -114,16 +114,11 @@ export class Store {
   submitBounty(row) {
     return this.transaction(() => {
       const existing = this.one('SELECT id,state FROM bounties WHERE id=?', row.id);
-      if (existing) {
-        if (row.ownerEvent === true && existing.state === 'pending') {
-          this.run("UPDATE bounties SET payload=?,state='active',discord_dirty=1 WHERE id=? AND state='pending'", JSON.stringify(row), row.id);
-        }
-        return existing.id;
-      }
+      if (existing) return existing.id;
       if (this.one("SELECT id FROM bounties WHERE poster_uuid=? AND state IN ('pending','approved','active')", row.posterUuid)) {
         throw new Error('You already have an active or pending bounty.');
       }
-      const initialState = row.ownerEvent === true ? 'active' : 'pending';
+      const initialState = 'pending';
       this.run(`INSERT INTO bounties(id,poster_uuid,poster_name,target_uuid,target_name,payload,state,created,expires)
         VALUES (?,?,?,?,?,?,?,?,?)`, row.id, row.posterUuid, row.posterName, row.targetUuid,
         row.targetName, JSON.stringify(row), initialState, row.created, row.expires);

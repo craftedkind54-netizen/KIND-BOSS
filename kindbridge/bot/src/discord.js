@@ -461,7 +461,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
           if (bounty.review_message_id) {
             try {
               const review=await client.channels.fetch(c.bountyStaffChannel), reviewMsg=await review.messages.fetch(bounty.review_message_id);
-              const reviewText=JSON.parse(bounty.payload || '{}').ownerEvent ? 'Owner event bounty published directly.' : 'Approved and confirmed by the Minecraft server.';
+              const reviewText='Approved and confirmed by the Minecraft server.';
               await reviewMsg.edit({...bountyContent(bounty,c,'active'),components:[],content:reviewText});
             } catch (error) { console.error(`Could not update bounty review ${bounty.id.slice(0,8)}: ${error.message || error}`); }
           }

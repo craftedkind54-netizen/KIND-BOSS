@@ -49,7 +49,7 @@ export function server(store, c, youtube, ready = () => true) {
         return;
       }
       if (u.pathname.startsWith('/bridge/')) {
-        if (!equalSecret(req.headers.authorization, `Bearer ${c.kindBridgeSecret || c.secret}`)) return reply(401, { error: 'Unauthorized' });
+        if (!equalSecret(req.headers.authorization, `Bearer ${c.secret}`)) return reply(401, { error: 'Unauthorized' });
         if (u.pathname === '/bridge/bounties' && req.method === 'POST') {
           const body = JSON.parse((await readBody(req, 200000)).toString());
           if (!/^[0-9a-f-]{36}$/i.test(body.id || '') || !/^[0-9a-f-]{36}$/i.test(body.posterUuid || '') ||

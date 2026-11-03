@@ -5,7 +5,7 @@ function integer(env, key, fallback, min, max) {
 }
 export function config(env = process.env) {
   const c = {
-    token: env.DISCORD_TOKEN || '', secret: env.BRIDGE_SECRET || '', kindBridgeSecret: env.KIND_BRIDGE_SECRET || env.BRIDGE_SECRET || '', youtubeKey: env.YOUTUBE_API_KEY || '',
+    token: env.DISCORD_TOKEN || '', secret: env.BRIDGE_SECRET || '', youtubeKey: env.YOUTUBE_API_KEY || '',
     publicUrl: (env.PUBLIC_URL || (env.RAILWAY_PUBLIC_DOMAIN ? `https://${env.RAILWAY_PUBLIC_DOMAIN}` : 'https://kind-boss-production.up.railway.app')).replace(/\/$/, ''), dataDir: env.DATA_DIR || './data',
     guild: env.GUILD_ID || '1555704317552361563', staffRoles: (env.STAFF_ROLE_IDS || '1555726622982668408').split(',').map(s => s.trim()),
     apply: env.APPLY_CHANNEL_ID || '1555722797475561543', log: env.LOG_CHANNEL_ID || '1555723400008302763',

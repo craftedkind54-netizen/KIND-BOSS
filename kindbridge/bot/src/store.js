@@ -115,8 +115,15 @@ export class Store {
     return this.transaction(() => {
       const existing = this.one('SELECT id,state FROM bounties WHERE id=?', row.id);
       if (existing) return existing.id;
-      if (this.one("SELECT id FROM bounties WHERE poster_uuid=? AND state IN ('pending','approved','active')", row.posterUuid)) {
-        throw new Error('You already have an active or pending bounty.');
+      // KindCore holds the escrow and refuses a new bounty while the poster
+      // still has an open one, so a new submission proves any older open
+      // record here is stale (its cancel/expiry update never arrived, e.g.
+      // during an authentication outage). Close those records instead of
+      // blocking the new bounty forever.
+      const stale = this.all("SELECT id,result FROM bounties WHERE poster_uuid=? AND state IN ('pending','approved','active')", row.posterUuid);
+      for (const old of stale) {
+        const result = { ...JSON.parse(old.result || '{}'), supersededBy: row.id, supersededAt: Date.now() };
+        this.run("UPDATE bounties SET state='cancelled',result=?,discord_dirty=1 WHERE id=?", JSON.stringify(result), old.id);
       }
       const initialState = 'pending';
       this.run(`INSERT INTO bounties(id,poster_uuid,poster_name,target_uuid,target_name,payload,state,created,expires)

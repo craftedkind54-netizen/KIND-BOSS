@@ -11,6 +11,7 @@ const { createActivePlayerGoal } = require('./activePlayerGoal');
 const { buildActiveGoalPanel } = require('./activeGoalPresentation');
 const { strikeStaffRoleIds, canManageStrikes } = require('./strikeStaffAccess');
 const { formatApprovedStrikeNotice } = require('./strikeNotice');
+const { createTeamSync } = require('./teamSync');
 const {
   Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
@@ -118,6 +119,14 @@ const normalizeName = n => n.trim().toLowerCase();
 const validAmount = n => Number.isSafeInteger(n) && n > 0 && n <= 1000000;
 const client = global.__KIND_BOSS_CLIENT;
 const discordUserIdForPlayer = createApplicationDiscordLookup({ databasePath: KIND_BRIDGE_DB_PATH, databasePaths: KIND_BRIDGE_DB_PATHS, DatabaseClass: Database });
+const teamSync = createTeamSync({
+  db,
+  getGuild: () => client.guilds.fetch(GUILD_ID),
+  discordUserIdForPlayer,
+  adminRoleIds: [OWNER_ROLE_ID, process.env.CO_OWNER_ROLE_ID || ''],
+  categoryId: process.env.TEAM_CATEGORY_ID || '',
+  discord: { ChannelType, PermissionFlagsBits },
+});
 
 const upsertPlayer = db.prepare(`INSERT INTO players(uuid,username,normalized_username,updated_at) VALUES(?,?,?,?) ON CONFLICT(uuid) DO UPDATE SET username=excluded.username, normalized_username=excluded.normalized_username, updated_at=excluded.updated_at`);
 const ensureTotal = db.prepare(`INSERT OR IGNORE INTO strike_totals(player_uuid,total) VALUES(?,0)`);
@@ -453,6 +462,15 @@ app.post('/api/v1/staff/ranks/actions/ack',(req,res)=>{
 app.post('/api/v1/minecraft/event', async (req,res) => {
   try {
     const { type, username, uuid, message, staffReason } = req.body || {};
+    if (type === 'team_sync') {
+      // Validate now so a malformed snapshot gets a clear 400; the Discord work
+      // (roles, channels, members) runs in the background in arrival order.
+      let run;
+      try { run = teamSync.enqueue(req.body); }
+      catch (e) { return res.status(400).json({ error: e.message }); }
+      run.then(summary => console.log(`Team sync: ${JSON.stringify(summary)}`)).catch(() => {});
+      return res.status(202).json({ ok: true, queued: true });
+    }
     const allowedTypes = new Set(['server_online','server_offline','join','leave','advancement','death','staff_command','active_sample']);
     if (!allowedTypes.has(type)) return res.status(400).json({error:'Unsupported event type'});
 

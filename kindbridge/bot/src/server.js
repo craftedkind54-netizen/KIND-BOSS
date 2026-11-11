@@ -48,6 +48,15 @@ export function server(store, c, youtube, ready = () => true) {
         req.pipe(upstream);
         return;
       }
+      if (u.pathname.startsWith('/board/') && req.method === 'GET') {
+        const upstream = httpRequest({ hostname: '127.0.0.1', port: c.boardPresenterPort, path: req.url, method: 'GET', headers: { accept: req.headers.accept || '*/*' } }, response => {
+          res.writeHead(response.statusCode || 502, response.headers);
+          response.pipe(res);
+        });
+        upstream.on('error', () => { if (!res.headersSent) reply(502, { error: 'Promotion board screen unavailable' }); else res.destroy(); });
+        upstream.end();
+        return;
+      }
       if (u.pathname.startsWith('/bridge/')) {
         if (!equalSecret(req.headers.authorization, `Bearer ${c.secret}`)) return reply(401, { error: 'Unauthorized' });
         if (u.pathname === '/bridge/bounties' && req.method === 'POST') {

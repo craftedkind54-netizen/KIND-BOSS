@@ -47,15 +47,22 @@ test('six distinct rank banks cover every category with valid, unique questions'
   const seen=new Set();
   assert.equal(Object.keys(bank.QUESTIONS).length,6);
   for(const rank of Object.keys(labels)){
-    assert.equal(bank.EVALUATIONS[rank].length,9);
-    for(let i=0;i<9;i++){
+    const n=bank.categoryCount(rank);
+    assert.equal(n,bank.SPEECH_RANKS.includes(rank)?11:10);
+    assert.equal(bank.EVALUATIONS[rank].length,n);
+    for(let i=0;i<n;i++){
       const cat=bank.categoryFor(rank,i);
-      assert.equal(cat.qs.length,i===8?8:4);
-      assert.ok(cat.evaluation&&cat.brief&&cat.source);
+      assert.equal(cat.qs.length,cat.bonus?8:4);
+      assert.ok(cat.evaluation&&cat.brief&&cat.source&&cat.pick&&cat.seconds);
+      if(cat.key==='speech')continue; // the same speech prompts are shared by Senior Staff and above
       for(const q of cat.qs){assert.ok(!seen.has(q),`Repeated question: ${q}`);seen.add(q);}
     }
   }
-  assert.equal(seen.size,240);
+  assert.equal(seen.size,6*(9*4+8));
+  const speech=bank.categoryFor('senior',bank.categoryCount('senior')-2);
+  assert.equal(speech.key,'speech');assert.equal(speech.pick,1);assert.equal(speech.seconds,300);
+  assert.equal(bank.categoriesFor('general').find(c=>c.key==='scenario').seconds,90);
+  assert.ok(!bank.categoriesFor('general').some(c=>c.key==='speech'));
   assert.throws(()=>bank.categoryFor('unknown',0),RangeError);
 });
 
@@ -68,20 +75,27 @@ test('welcome, study guide, every category brief and question menu match each ta
     assert.ok(welcome.description.includes(labels[rank]));
     for(const line of bank.EVALUATIONS[rank])assert.ok(welcome.description.includes(line));
     const guide=ctx.studyGuideEmbed(a).data.description;
-    assert.ok(guide.includes(bank.EVALUATIONS[rank][0]));
+    // Study guide points at rule sections and never reveals board categories.
+    assert.ok(guide.includes('SMP rules'));assert.ok(guide.includes('KIND SMP - RULES'));
+    assert.ok(!/troll|bonus/i.test(guide));
+    for(const cat of bank.categoriesFor(rank))assert.ok(!guide.includes(cat.name),`Guide reveals ${cat.name}`);
     assert.ok(!guide.includes(bank.categoryFor(rank,0).qs[0]));
-    for(let i=0;i<9;i++){
+    assert.equal(guide.includes('5 minutes'),bank.SPEECH_RANKS.includes(rank));
+    const n=bank.categoryCount(rank);
+    for(let i=0;i<n;i++){
+      const cat=bank.categoryFor(rank,i);
       Object.assign(s,{started:true,category:i,awaitingCategoryBrief:true});
       assert.ok(ctx.boardEmbed(a,s).data.description.includes(bank.EVALUATIONS[rank][i]));
+      assert.ok(ctx.boardEmbed(a,s).data.description.includes(`Category ${i+1}/${n}`));
       assert.equal(ctx.boardComponents(a,s)[0].components[0].data.label,'▶️ Start Category');
-      s.awaitingCategoryBrief=false;s.selected=[0,1,2];
+      s.awaitingCategoryBrief=false;s.selected=Array.from({length:cat.pick},(_,k)=>k);
       const board=ctx.boardEmbed(a,s).data.description;
       const menu=ctx.boardComponents(a,s)[0].components[0].data;
-      assert.equal(menu.min,3);assert.equal(menu.max,3);assert.equal(menu.options.length,i===8?8:4);
-      for(const q of bank.categoryFor(rank,i).qs)assert.ok(board.includes(q));
-      assert.equal(menu.options.filter(x=>x.default).length,3);
-      assert.equal(ctx.boardComponents(a,s).length,i===8?3:4);
-      if(i===8){assert.ok(board.includes('Unscored bonus'));for(const prompt of bank.BONUS_PROMPTS)assert.ok(board.includes(prompt));}
+      assert.equal(menu.min,cat.pick);assert.equal(menu.max,cat.pick);assert.equal(menu.options.length,cat.qs.length);
+      for(const q of cat.qs)assert.ok(board.includes(q));
+      assert.equal(menu.options.filter(x=>x.default).length,cat.pick);
+      assert.equal(ctx.boardComponents(a,s).length,cat.bonus?3:4);
+      if(cat.bonus){assert.equal(i,n-1);assert.ok(board.includes('Unscored bonus'));for(const prompt of bank.BONUS_PROMPTS)assert.ok(board.includes(prompt));}
     }
   }
 });
@@ -92,17 +106,18 @@ test('General to Senior flow shows welcome then all nine briefs, alternates turn
   assert.ok(start.payload.embeds[0].data.title.includes('Category Brief'));
   assert.equal(JSON.parse(h.row().interview_state).questionBankVersion,bank.VERSION);assert.match(JSON.parse(h.row().interview_state).presenterToken,/^[a-f0-9]{32}$/);
   assert.ok((await h.run('startInterview')).result.includes('already started'));
-  for(let idx=0;idx<9;idx++){
-    const user=idx%2?'partner':'lead';
+  const n=bank.categoryCount('senior'),last=n-1;
+  for(let idx=0;idx<n;idx++){
+    const user=idx%2?'partner':'lead',cat=bank.categoryFor('senior',idx),sel=Array.from({length:cat.pick},(_,k)=>k);
     const opened=await h.run('startCategory',{user:{id:user}});
-    for(const q of bank.categoryFor('senior',idx).qs)assert.ok(opened.payload.embeds[0].data.description.includes(q));
-    let s=JSON.parse(h.row().interview_state);s.selected=[0,1,2];if(idx<8)s.grades[idx]=3;h.ctx.saveState(42,s);
+    for(const q of cat.qs)assert.ok(opened.payload.embeds[0].data.description.includes(q));
+    let s=JSON.parse(h.row().interview_state);s.selected=sel;if(idx<last)s.grades[idx]=3;h.ctx.saveState(42,s);
     const done=await h.run('completeCategory',{user:{id:user}});
-    assert.ok(done.payload.embeds[0].data.title.includes(idx<8?'Category Brief':'All Categories Complete'));
+    assert.ok(done.payload.embeds[0].data.title.includes(idx<last?'Category Brief':'All Categories Complete'));
     s=JSON.parse(h.row().interview_state);
-    assert.deepEqual(s.questionHistory[idx],[0,1,2]);
-    if(idx<8){assert.equal(s.category,idx+1);assert.equal(s.awaitingCategoryBrief,true);}
-    else {assert.ok(done.payload.embeds[0].data.description.includes('24/24'));assert.equal(s.grades[8],undefined);}
+    assert.deepEqual(s.questionHistory[idx],sel);
+    if(idx<last){assert.equal(s.category,idx+1);assert.equal(s.awaitingCategoryBrief,true);}
+    else {assert.ok(done.payload.embeds[0].data.description.includes('30/30'));assert.equal(s.grades[last],undefined);}
   }
 });
 
@@ -134,9 +149,10 @@ test('bonus rejects numeric grading',async()=>{
 
 test('final approval includes the exact asked questions and bonus notes without adding bonus points',async()=>{
   const questionBank=bank.snapshot('senior');
-  const grades=Object.fromEntries(Array.from({length:9},(_,i)=>[i,3]));
-  const questionHistory=Object.fromEntries(Array.from({length:9},(_,i)=>[i,[0,1,2]]));
-  const notes=Object.fromEntries(Array.from({length:9},(_,i)=>[i,{lead:'A'.repeat(4000),partner:'B'.repeat(4000)}]));
+  const n=questionBank.length;
+  const grades=Object.fromEntries(Array.from({length:n},(_,i)=>[i,3]));
+  const questionHistory=Object.fromEntries(questionBank.map((c,i)=>[i,Array.from({length:c.pick},(_,k)=>k)]));
+  const notes=Object.fromEntries(Array.from({length:n},(_,i)=>[i,{lead:'A'.repeat(4000),partner:'B'.repeat(4000)}]));
   const h=harness('senior',{started:true,questionBankVersion:2,questionBank,grades,questionHistory,notes});
   const sent=[];let persisted;
   h.ctx.appById=()=>({...h.row(),notes:'Z'.repeat(4000)});
@@ -145,11 +161,12 @@ test('final approval includes the exact asked questions and bonus notes without 
   vm.runInContext(source.slice(source.indexOf('async function postFinal('),source.indexOf('function resultPages(')),h.ctx);
   await h.ctx.postFinal(42);
   const last=sent.at(-1);
-  assert.ok(last.embeds[0].data.description.includes('TOTAL: 24/24'));
+  assert.ok(last.embeds[0].data.description.includes('TOTAL: 30/30'));
   assert.ok(last.embeds[0].data.description.includes('Bonus / Troll Check: **Unscored**'));
-  assert.equal(persisted[1],24);
+  assert.ok(last.embeds[0].data.description.includes('🎤 Speech: **3/3**'));
+  assert.equal(persisted[1],30);
   const details=sent.slice(0,-1).map(x=>x.embeds[0].data.description).join('\n');
-  for(const cat of questionBank)for(const q of cat.qs.slice(0,3))assert.ok(details.includes(q));
+  for(const cat of questionBank)for(const q of cat.qs.slice(0,cat.pick))assert.ok(details.includes(q));
   assert.ok(details.includes('A'.repeat(350)));
   assert.equal(last.components[0].components.length,2);
 });
@@ -157,7 +174,7 @@ test('final approval includes the exact asked questions and bonus notes without 
 test('every rank has its own scored categories',()=>{
   const names=Object.keys(labels).map(r=>bank.categoriesFor(r).slice(0,8).map(c=>c.name).join('|'));
   assert.equal(new Set(names).size,6);
-  for(const r of Object.keys(labels)){const cats=bank.categoriesFor(r);assert.equal(cats.length,bank.CATEGORY_COUNT);assert.equal(new Set(cats.map(c=>c.key)).size,9);assert.ok(cats[8].bonus);}
+  for(const r of Object.keys(labels)){const cats=bank.categoriesFor(r);assert.equal(cats.length,bank.categoryCount(r));assert.equal(new Set(cats.map(c=>c.key)).size,cats.length);assert.ok(cats.at(-1).bonus);assert.ok(cats.some(c=>c.key==='scenario'));assert.equal(bank.maxScore(r),(cats.length-1)*3);}
 });
 
 test('screen share shows one selected question at a time with a timer and two repeats',async()=>{
@@ -204,7 +221,7 @@ test('practice boards are labelled, can be ended, and summarise scores',()=>{
   Object.assign(s,{started:true,category:0,awaitingCategoryBrief:false,selected:[0,1,2]});
   assert.ok(ctx.boardComponents(a,s).length<=5);
   const sum=ctx.practiceSummary(a,{grades:{0:3,1:2}});
-  assert.ok(sum.includes('5/24'));assert.ok(sum.includes(bank.categoriesFor('senior')[0].name));
+  assert.ok(sum.includes('5/30'));assert.ok(sum.includes(bank.categoriesFor('senior')[0].name));
 });
 
 test('practice boards show a fake applicant instead of a member',()=>{
@@ -228,4 +245,17 @@ test('Activity page finds the interview by voice channel and hands Discord the a
     assert.equal((await fetch(base+'/activity/state?channel_id=abc')).status,404);
     assert.equal((await fetch(base+'/activity',{redirect:'manual'})).status,301);
   }finally{server.close();}
+});
+
+test('speech shows one prompt with a 5-minute timer and scenarios get 90 seconds',async()=>{
+  const qb=bank.snapshot('senior'),sp=qb.findIndex(c=>c.key==='speech'),sc=qb.findIndex(c=>c.key==='scenario');
+  const h=harness('senior',{started:true,questionBankVersion:bank.VERSION,questionBank:qb,category:sp,leadInterviewer:'lead',selected:[0],grades:{},notes:{}});
+  assert.ok(h.ctx.boardEmbed(h.row(),JSON.parse(h.row().interview_state)).data.description.includes('300 seconds'));
+  await h.run('showQ');
+  let st=h.ctx.presenterState(h.row());
+  assert.equal(st.seconds,300);assert.equal(st.of,1);assert.equal(st.question,qb[sp].qs[0]);
+  assert.ok((await h.run('showQ')).result.includes('All 1 question has'));
+  const h2=harness('senior',{started:true,questionBankVersion:bank.VERSION,questionBank:qb,category:sc,leadInterviewer:'lead',selected:[0,1,2],grades:{},notes:{}});
+  await h2.run('showQ');
+  assert.equal(h2.ctx.presenterState(h2.row()).seconds,90);
 });

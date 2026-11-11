@@ -4,14 +4,14 @@
 // EXPECTATIONS, and STRIKES, JAIL & REDEMPTION (updated 2026-11).
 // Every target rank has its own eight scored categories plus the shared,
 // unscored Bonus / Troll Check. Interview design only; grants no permissions.
-const VERSION = 3;
+const VERSION = 4;
 
 const RULES = 'SMP rules: KIND SMP - RULES';
 const STAFF = 'SMP rules: STAFF RANKS & EXPECTATIONS';
 const STRIKES = 'SMP rules: STRIKES, JAIL & REDEMPTION';
 
 // c(key, name, brief, evaluation, source, questions)
-function c(key, name, brief, evaluation, source, qs) { return {key, name, brief, evaluation, source, qs}; }
+function c(key, name, brief, evaluation, source, qs, opts = {}) { return {key, name, brief, evaluation, source, qs, pick: opts.pick || 3, seconds: opts.seconds || 60}; }
 
 const BANK = {
   general: [
@@ -412,7 +412,54 @@ const BANK = {
   ]
 };
 
-const BONUS = {key:'bonus',name:'😈 Bonus / Troll Check',bonus:true,brief:'These questions are not mainly about getting the correct answer. They test personality, maturity, creativity and reactions under pressure. Keep it playful and respectful; no real permission changes or rule-breaking. Record observations, not a right-or-wrong score.',source:'User-supplied creative prompts; staff-integrity boundaries from the SMP rules'};
+// Longer, multi-step situations: the applicant walks through what they do, in order.
+const SCENARIO_BRIEF = 'Read the whole situation once, slowly. The applicant should walk through what they do in order: what they check, who they involve, what they decide, and what they write down. Score the full process, not just the final answer.';
+const SCENARIOS = {
+  general: ['A player says they were raided. They send a clip of someone digging straight through stone to their hidden base, and the raider is now insulting them in DMs. Walk us through everything you do, in order.',
+    'During a Discord argument, one player threatens to post another player\'s school name. One of them is your friend. What do you do, step by step?',
+    'A player keeps placing lava at the edge of spawn and says "it\'s outside spawn, so it\'s legal." Two players have died at spawn. Handle it from start to finish.',
+    'You are the only staff online. A new player tells you they found a way to duplicate shulkers and asks if they can keep the items. Handle it from start to finish.'],
+  head_general: ['Two General Staff jailed the same player for 10 and 90 minutes for the same chat spam, and the player is now complaining publicly. Handle the player, both staff members, and the record.',
+    'A General Staff member muted a player who criticized their decision. The player opened a Support ticket. Walk us through how you handle it.',
+    'A trainee hands you a report that says "he\'s hacking, everyone says so" with no proof, and the accused player is online right now. What do you do?',
+    'A General Staff member was raided and is now investigating the raider themselves. Fix the situation, step by step.'],
+  senior: ['A player at 6 strikes is caught using X-ray on anti-cheat and video, then deletes chat logs and blames a friend. Walk us through the strikes, the punishment, and the write-up.',
+    'A dupe was found an hour ago. Three players used it: one reported it after 10 minutes, one kept the items, and one sold them. Decide each case.',
+    'A permanently banned player appeals, apologizes, and says their alt was only used to talk to friends. Decide the appeal and explain it.',
+    'A General Staff member gave a strike they were not allowed to give, but the player really did break the rule. Handle both sides.'],
+  head_senior: ['Senior Staff are split 3-3 on whether a new farm design is an exploit, and the player has used it for a week. Lead the decision from start to finish.',
+    'A popular Senior Staff member is accused of using inventory logs to find a rival\'s stash. The accuser has 8 strikes. Walk us through it.',
+    'A player with 14 strikes asks for redemption after serving their temp ban, and Senior Staff disagree. Lead the review.',
+    'During a crash attack, a Senior Staff member rolled back the world without asking, and it undid legal raids. Handle it after the incident is over.'],
+  co_owner: ['The Owner is away for 3 days. An active exploit is draining the economy and two leaders disagree about a rollback. Handle it.',
+    'A complaint arrives about the Head of Senior Staff, and it also mentions you. Route it and handle your part.',
+    'The community passes a poll you think is harmful, and some staff refuse to enforce it. Handle it.',
+    'A permanently banned player who doxxed someone appeals with a long apology. Decide and explain your decision.'],
+  owner: ['A popular staff member is caught using spectator to find bases. The community is split and your friends defend them. Make the final decision.',
+    'Someone legally raids your main base and posts it everywhere. Staff want to punish them for "disrespect." Respond.',
+    'A crash exploit corrupted chunks, and the only backup also reverts a week of legal raids. Decide what to do and how to announce it.',
+    'Leadership asks you to approve an IP ban for a player who harassed you personally. Decide.']
+};
+for (const rank of Object.keys(BANK)) {
+  BANK[rank].push(c('scenario', '🎭 Scenarios', SCENARIO_BRIEF,
+    'Handle a full real-world situation in the right order with the right people.',
+    `${RULES}; ${STAFF}; ${STRIKES}`, SCENARIOS[rank], {seconds: 90}));
+}
+
+// Senior Staff and above: one speech, scored on how they speak, not the topic.
+const SPEECH_RANKS = ['senior', 'head_senior', 'co_owner', 'owner'];
+const SPEECH = ['Give a 5-minute speech on any topic you choose.',
+  'Give a 5-minute speech to the staff team about why fairness matters on a partial-anarchy server.',
+  'Give a 5-minute speech announcing a rule change to the whole community.',
+  'Give a 5-minute speech welcoming new General Staff to the team.'];
+for (const rank of SPEECH_RANKS) {
+  BANK[rank].push(c('speech', '🎤 Speech',
+    'Pick ONE prompt. The applicant may choose any topic for the first prompt. Score speaking skill, not opinions: clear structure (start, middle, end), confident and calm delivery, staying on time, and speaking respectfully to the audience.',
+    'Speak clearly, confidently and respectfully to a group.',
+    'Leadership communication', SPEECH, {pick: 1, seconds: 300}));
+}
+
+const BONUS = {key:'bonus',name:'😈 Bonus / Troll Check',bonus:true,pick:3,seconds:60,brief:'These questions are not mainly about getting the correct answer. They test personality, maturity, creativity and reactions under pressure. Keep it playful and respectful; no real permission changes or rule-breaking. Record observations, not a right-or-wrong score.',source:'User-supplied creative prompts; staff-integrity boundaries from the SMP rules'};
 
 const FOCUS = {
   general:'Chat moderation, everyday rules, proof collection and knowing when to escalate.',
@@ -453,9 +500,54 @@ for (const rank of Object.keys(BANK)) {
   EVALUATIONS[rank] = RANK_CATEGORIES[rank].map(cat => cat.evaluation);
 }
 
-// Every rank has the same number of categories (8 scored + bonus); names differ.
+// Category counts differ by rank (Speech is Senior Staff and above). CATEGORIES
+// is the General Staff list, kept for older callers.
 const CATEGORIES = RANK_CATEGORIES.general.map(({qs, evaluation, ...meta}) => meta);
 const CATEGORY_COUNT = CATEGORIES.length;
+function categoryCount(targetRank) { return (RANK_CATEGORIES[targetRank] || RANK_CATEGORIES.general).length; }
+function maxScore(targetRank) { return (RANK_CATEGORIES[targetRank] || RANK_CATEGORIES.general).filter(cat => !cat.bonus).length * 3; }
+
+// What applicants should read in the SMP rules doc. Never names board categories.
+const DOC_RULES = 'KIND SMP - RULES', DOC_STAFF = 'STAFF RANKS & EXPECTATIONS', DOC_STRIKES = 'STRIKES, JAIL & REDEMPTION';
+const STUDY_GUIDE = {
+  general: [
+    [DOC_RULES, 'Discord Rules (Support channel, criticism, harassment, cussing, politics, spam, private information)'],
+    [DOC_RULES, 'What anarchy means here, What protection means, PvP, Traps, Griefing, Stealing, Scamming, Coordinates'],
+    [DOC_RULES, 'Cheating, Ban evasion, Alt accounts'],
+    [DOC_RULES, 'Staff Rules, Reporting admin abuse, Evidence, Punishments, If something weird happens'],
+    [DOC_STAFF, 'General Staff, Rules for all staff, Gameplay and Staff Mode'],
+    [DOC_STRIKES, 'Jail time guide (small offenses), Staff accountability and who can do what']],
+  head_general: [
+    [DOC_RULES, 'The whole tab, especially Where the line is and Staff Rules'],
+    [DOC_STAFF, 'Head Staff, General Staff, Rules for all staff, Staff actions, logs, and abuse, Rule and plugin changes'],
+    [DOC_STRIKES, 'Jail: what it\'s for, Jail time guide, Online time and escaping jail, Legal anarchy gameplay, Writing down jail and strikes']],
+  senior: [
+    [DOC_RULES, 'The whole tab, especially Cheating, Duping, Exploits, Rollback abuse and Evidence'],
+    [DOC_STAFF, 'Senior Staff, Rules for all staff, Rule and plugin changes, Staff actions, logs, and abuse'],
+    [DOC_STRIKES, 'The whole tab: strike levels, giving strikes fairly, temp ban guide, permanent bans, redemption, appeals, write-ups']],
+  head_senior: [
+    [DOC_RULES, 'The whole tab'],
+    [DOC_STAFF, 'The whole tab, especially Head of Senior Staff, Promotion to Senior Staff and Rule and plugin changes'],
+    [DOC_STRIKES, 'The whole tab, especially Good behavior review and Staff accountability']],
+  co_owner: [
+    [DOC_RULES, 'The whole tab'],
+    [DOC_STAFF, 'The whole tab, especially Owner, Co-Owner, Rule and plugin changes and Staff actions, logs, and abuse'],
+    [DOC_STRIKES, 'The whole tab, especially Permanent and IP bans and Permanent ban appeals']],
+  owner: [
+    [DOC_RULES, 'The whole tab'],
+    [DOC_STAFF, 'The whole tab'],
+    [DOC_STRIKES, 'The whole tab']]
+};
+const STUDY_EXTRA = {
+  senior: 'Be ready to speak in front of the board for about 5 minutes.',
+  head_senior: 'Be ready to speak in front of the board for about 5 minutes.',
+  co_owner: 'Be ready to speak in front of the board for about 5 minutes.',
+  owner: 'Be ready to speak in front of the board for about 5 minutes.'
+};
+function studyGuideFor(targetRank) {
+  const lines = (STUDY_GUIDE[targetRank] || STUDY_GUIDE.general).map(([tab, sections]) => `• **${tab}** tab: ${sections}`);
+  return {lines, extra: STUDY_EXTRA[targetRank] || ''};
+}
 
 function categoriesFor(targetRank) {
   if (!Object.hasOwn(RANK_CATEGORIES, targetRank)) throw new RangeError('Unknown interview rank or category');
@@ -485,4 +577,4 @@ const BOARD_BRIEF = [
 const QUESTION_SECONDS = 60;
 const MAX_REPEATS = 2;
 
-module.exports = {VERSION, CATEGORIES, CATEGORY_COUNT, FOCUS, EVALUATIONS, QUESTIONS, BONUS_PROMPTS, BOARD_BRIEF, QUESTION_SECONDS, MAX_REPEATS, categoriesFor, categoryFor, snapshot};
+module.exports = {categoryCount, maxScore, studyGuideFor, SPEECH_RANKS, VERSION, CATEGORIES, CATEGORY_COUNT, FOCUS, EVALUATIONS, QUESTIONS, BONUS_PROMPTS, BOARD_BRIEF, QUESTION_SECONDS, MAX_REPEATS, categoriesFor, categoryFor, snapshot};

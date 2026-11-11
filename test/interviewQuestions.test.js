@@ -206,3 +206,10 @@ test('practice boards are labelled, can be ended, and summarise scores',()=>{
   const sum=ctx.practiceSummary(a,{grades:{0:3,1:2}});
   assert.ok(sum.includes('5/24'));assert.ok(sum.includes(bank.categoriesFor('senior')[0].name));
 });
+
+test('practice boards show a fake applicant instead of a member',()=>{
+  const {ctx,row}=harness('general');
+  const d=ctx.boardEmbed({...row(),source:'practice'},{}).data.description;
+  assert.ok(d.includes('Practice Applicant (fake)'));assert.ok(!d.includes('<@applicant>'));
+  assert.ok(ctx.boardEmbed(row(),{}).data.description.includes('<@applicant>'));
+});

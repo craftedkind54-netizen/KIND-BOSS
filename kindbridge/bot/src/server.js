@@ -48,7 +48,7 @@ export function server(store, c, youtube, ready = () => true) {
         req.pipe(upstream);
         return;
       }
-      if (u.pathname.startsWith('/board/') && req.method === 'GET') {
+      if ((u.pathname.startsWith('/board/') || u.pathname === '/activity' || u.pathname.startsWith('/activity/')) && req.method === 'GET') {
         const upstream = httpRequest({ hostname: '127.0.0.1', port: c.boardPresenterPort, path: req.url, method: 'GET', headers: { accept: req.headers.accept || '*/*' } }, response => {
           res.writeHead(response.statusCode || 502, response.headers);
           response.pipe(res);

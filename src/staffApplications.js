@@ -198,7 +198,7 @@ function currentInterviewer(s){const people=interviewers(s);return people.length
 function interviewBriefEmbed(a,s){
  const people=interviewers(s),lead=people[0],partner=people[1];
  const evaluations=interviewQuestions.EVALUATIONS[a.target_rank].map(x=>`• ${x}`).join('\n');
- return new EmbedBuilder().setTitle(a.source==='practice'?'🧪 PRACTICE — 📋 PROMOTION BOARD BRIEF':'📋 PROMOTION BOARD BRIEF').setDescription(`**Welcome to the KIND SMP Staff Promotion Board!**\n\n${interviewQuestions.BOARD_BRIEF}\n\n**Applicant:** ${applicantLabel(a)}\n**Target rank:** ${rank(a.target_rank).label}\n${a.scheduled_ts?`**Scheduled:** <t:${a.scheduled_ts}:F>\n`:''}\n### What we evaluate for ${rank(a.target_rank).label}\n${evaluations}\n\n**Lead interviewer:** ${lead?`<@${lead}>`:'Not assigned'}\n**Second interviewer:** ${partner?`<@${partner}>`:'Not added yet'}\n\n### How this board works\n• Read this brief aloud to the applicant before continuing.\n• Every rank has its **own 8 categories** plus the bonus.\n• Each category begins with its own brief.\n• In each core category select **3 questions** and score **0/3–3/3**.\n• Press **📺 Screen Share Link**, open it in a browser and share that window in the voice call. **📺 Show Next Question** then puts one question at a time on screen with a ${interviewQuestions.QUESTION_SECONDS}-second timer.\n• The final **Bonus / Troll Check** uses 3 playful prompts and notes, with no points or correct-answer requirement.\n• Both interviewers may save their own notes.\n• Complete Category opens the next category brief and alternates interviewers when two are assigned.\n\nWhen everyone is ready, press **Next: First Category**.`);
+ return new EmbedBuilder().setTitle(a.source==='practice'?'🧪 PRACTICE — 📋 PROMOTION BOARD BRIEF':'📋 PROMOTION BOARD BRIEF').setDescription(`**Welcome to the KIND SMP Staff Promotion Board!**\n\n${interviewQuestions.BOARD_BRIEF}\n\n**Applicant:** ${applicantLabel(a)}\n**Target rank:** ${rank(a.target_rank).label}\n${a.scheduled_ts?`**Scheduled:** <t:${a.scheduled_ts}:F>\n`:''}\n### What we evaluate for ${rank(a.target_rank).label}\n${evaluations}\n\n**Lead interviewer:** ${lead?`<@${lead}>`:'Not assigned'}\n**Second interviewer:** ${partner?`<@${partner}>`:'Not added yet'}\n\n### How this board works\n• Read this brief aloud to the applicant before continuing.\n• Every rank has its **own 8 categories** plus the bonus.\n• Each category begins with its own brief.\n• In each core category select **3 questions** and score **0/3–3/3**.\n• In the interview voice call, press **🚀 Activities** and start **KIND BOSS**. Everyone in the call sees the question screen; nobody shares a screen. **📺 Show Next Question** then puts one question at a time on it with a ${interviewQuestions.QUESTION_SECONDS}-second timer. (Fallback: **🔗 Screen Share Link**.)\n• The final **Bonus / Troll Check** uses 3 playful prompts and notes, with no points or correct-answer requirement.\n• Both interviewers may save their own notes.\n• Complete Category opens the next category brief and alternates interviewers when two are assigned.\n\nWhen everyone is ready, press **Next: First Category**.`);
 }
 function boardEmbed(a,s){
  if(!s.started)return interviewBriefEmbed(a,s);
@@ -357,9 +357,10 @@ if(i.isButton()&&i.customId.startsWith('sa:announceConfirm:')){if(!has(m,OWNER))
 
 // Screen-share presenter page (served on loopback; the public Kind Bridge
 // listener proxies /board/* to it). Tokens are random per interview.
-startBoardPresenter({lookup:token=>{
- const a=db.prepare('SELECT * FROM staff_apps WHERE interview_state LIKE ? LIMIT 1').get(`%"presenterToken":"${token}"%`);
- if(!a)return null;
- if(['final_review','approved','announced','denied','practice_done'].includes(a.status))return {phase:'ended',rank:rank(a.target_rank).label};
- return presenterState(a);
-}});
+function presenterFor(a){if(!a)return null;if(['final_review','approved','announced','denied','practice_done'].includes(a.status))return {phase:'ended',rank:rank(a.target_rank).label};return presenterState(a);}
+startBoardPresenter({
+ lookup:token=>presenterFor(db.prepare('SELECT * FROM staff_apps WHERE interview_state LIKE ? LIMIT 1').get(`%"presenterToken":"${token}"%`)),
+ // Discord Activity opened inside the interview voice call.
+ lookupChannel:channelId=>presenterFor(db.prepare('SELECT * FROM staff_apps WHERE voice_channel_id=? ORDER BY id DESC LIMIT 1').get(channelId)),
+ clientId:()=>process.env.DISCORD_CLIENT_ID||client.application?.id||client.user?.id||''
+});

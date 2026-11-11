@@ -20,7 +20,8 @@ export function config(env = process.env) {
     pollMinutes: integer(env, 'YOUTUBE_POLL_MINUTES', 10, 5, 1440),
     livePollMinutes: integer(env, 'YOUTUBE_LIVE_POLL_MINUTES', 5, 2, 60),
     maxCreators: integer(env, 'MAX_CREATORS', 100, 1, 1000), port: integer(env, 'PORT', 3000, 1, 65535),
-    strikesApiPort: integer(env, 'STRIKES_API_PORT', 3001, 1, 65535)
+    strikesApiPort: integer(env, 'STRIKES_API_PORT', 3001, 1, 65535),
+    boardPresenterPort: integer(env, 'BOARD_PRESENTER_PORT', 3002, 1, 65535)
   };
   return c;
 }

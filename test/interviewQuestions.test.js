@@ -213,3 +213,19 @@ test('practice boards show a fake applicant instead of a member',()=>{
   assert.ok(d.includes('Practice Applicant (fake)'));assert.ok(!d.includes('<@applicant>'));
   assert.ok(ctx.boardEmbed(row(),{}).data.description.includes('<@applicant>'));
 });
+
+test('Activity page finds the interview by voice channel and hands Discord the app id',async()=>{
+  const {startBoardPresenter}=require('../src/boardPresenter');
+  const ch='123456789012345678';
+  const server=startBoardPresenter({port:0,lookup:()=>null,lookupChannel:c=>c===ch?{phase:'question',question:'Q?',rank:'Senior Staff'}:null,clientId:()=>'987654321098765432'});
+  await new Promise(r=>server.once('listening',r));
+  const base=`http://127.0.0.1:${server.address().port}`;
+  try{
+    const html=await (await fetch(base+'/activity/?frame_id=f&channel_id='+ch)).text();
+    assert.ok(html.includes('"987654321098765432"'));assert.ok(!html.includes('__CLIENT_ID__'));
+    assert.equal((await (await fetch(base+'/activity/state?channel_id='+ch)).json()).question,'Q?');
+    assert.equal((await fetch(base+'/activity/state?channel_id=999999999999999999')).status,404);
+    assert.equal((await fetch(base+'/activity/state?channel_id=abc')).status,404);
+    assert.equal((await fetch(base+'/activity',{redirect:'manual'})).status,301);
+  }finally{server.close();}
+});

@@ -26,7 +26,7 @@ class Builder {
 const labels={general:'General Staff',head_general:'Head of General Staff',senior:'Senior Staff',head_senior:'Head Senior Staff',co_owner:'Co-Owner',owner:'Owner'};
 function harness(target='senior', saved={}){
   let row={id:42,user_id:'applicant',target_rank:target,interview_state:JSON.stringify(saved)};
-  const ctx=vm.createContext({crypto:require('node:crypto'),presenterUrl:t=>'https://example.com/board/'+t,interviewQuestions:bank,EmbedBuilder:Builder,ActionRowBuilder:Builder,ButtonBuilder:Builder,StringSelectMenuBuilder:Builder,ButtonStyle:{Primary:1,Secondary:2,Success:3},rank:key=>({label:labels[key]}),STAFF_STUDY_GUIDE_URL:'https://example.com/study',seniorPlus:()=>true,m:{},eph:(_i,message)=>message,appById:()=>({...row})});
+  const ctx=vm.createContext({postLiveQuestion:async()=>{},crypto:require('node:crypto'),presenterUrl:t=>'https://example.com/board/'+t,interviewQuestions:bank,EmbedBuilder:Builder,ActionRowBuilder:Builder,ButtonBuilder:Builder,StringSelectMenuBuilder:Builder,ButtonStyle:{Primary:1,Secondary:2,Success:3},rank:key=>({label:labels[key]}),STAFF_STUDY_GUIDE_URL:'https://example.com/study',seniorPlus:()=>true,m:{},eph:(_i,message)=>message,appById:()=>({...row})});
   const board=source.slice(source.indexOf('const LEGACY_CATEGORIES='),source.indexOf('async function createInterview('));
   vm.runInContext(board,ctx);
   vm.runInContext(source.slice(source.indexOf('function studyGuideEmbed('),source.indexOf('function availabilityHelp(')),ctx);

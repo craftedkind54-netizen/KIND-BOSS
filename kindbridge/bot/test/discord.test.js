@@ -7,7 +7,7 @@ import { submit, decide } from '../src/applications.js';
 
 function fixture(t,staffRole=false) {
   const s=new Store(':memory:'),c=config({});
-  const app=submit(s,'applicant',{edition:'java',username:'KindPlayer',age:'13',rules:'yes',heard:'Friend',why:'Build together',youtube:''},c.cooldown);
+  const app=submit(s,'applicant',{edition:'java',username:'KindPlayer',age:'13',rules:'yes',why:'Build together',youtube:''},c.cooldown);
   const {client}=createDiscord(s,c,{});
   t.after(async()=>{await client.destroy();s.close();});
   const responses=[];
@@ -35,7 +35,7 @@ test('A staff interaction queues whitelist work and refuses a second decision',a
 
 test('A foreign-authored application message cannot block status updates or role retries',async t=>{
   const s=new Store(':memory:'),c=config({});
-  const app=submit(s,'applicant',{edition:'java',username:'KindPlayer',age:'13',rules:'yes',heard:'Friend',why:'Build together',youtube:''},c.cooldown);
+  const app=submit(s,'applicant',{edition:'java',username:'KindPlayer',age:'13',rules:'yes',why:'Build together',youtube:''},c.cooldown);
   s.run("UPDATE applications SET state='ready',reviewer='staff',log_id='legacy-message',notification_done=0 WHERE id=?",app);
   let roleAdded=false; const posted=[];
   const applicant={roles:{add:async()=>{roleAdded=true;}}};
@@ -56,7 +56,7 @@ test('A foreign-authored application message cannot block status updates or role
 
 test('Member role errors are saved and posted to the staff log',async t=>{
   const s=new Store(':memory:'),c=config({});
-  const app=submit(s,'applicant',{edition:'java',username:'KindPlayer',age:'13',rules:'yes',heard:'Friend',why:'Build together',youtube:''},c.cooldown);
+  const app=submit(s,'applicant',{edition:'java',username:'KindPlayer',age:'13',rules:'yes',why:'Build together',youtube:''},c.cooldown);
   s.run("UPDATE applications SET state='approved',log_id='existing-message',notification_done=1 WHERE id=?",app);
   const posted=[];
   const guild={members:{fetch:async()=>({roles:{add:async()=>{const error=new Error('Missing Permissions');error.code=50013;throw error;}}})},roles:{fetch:async()=>null}};
@@ -73,7 +73,7 @@ test('Member role errors are saved and posted to the staff log',async t=>{
 
 test('Discord Unknown Member cancels the application, stops role retries, and privately asks them to reapply',async t=>{
   const s=new Store(':memory:'),c=config({});
-  const app=submit(s,'departed-member',{edition:'java',username:'KindPlayer',age:'13',rules:'yes',heard:'Friend',why:'Build together',youtube:''},c.cooldown);
+  const app=submit(s,'departed-member',{edition:'java',username:'KindPlayer',age:'13',rules:'yes',why:'Build together',youtube:''},c.cooldown);
   s.run("UPDATE applications SET state='ready',role_done=0,log_id='application-message',notification_done=1 WHERE id=?",app);
   s.queue('whitelist:'+app,'whitelist',{applicationId:app});
   s.run("UPDATE jobs SET state='leased',lease='active-lease' WHERE unique_key=?",'whitelist:'+app);
@@ -132,13 +132,15 @@ for (const edition of ['java', 'bedrock']) {
       assert.equal(modal.components.length, 5);
       assert.match(modal.components[0].description, /By submitting.*agree/);
       const inputs = modal.components.map(label => label.component);
-      assert.deepEqual(inputs.map(input => input.custom_id), ['username','age','heard','why','youtube']);
-      assert.equal(inputs.at(-1).required, false);
-      const values = {username: edition === 'java' ? 'NewPlayer' : 'New Player', age:'18', heard:'A friend', why:'Build together', youtube};
+      assert.deepEqual(inputs.map(input => input.custom_id), ['username','age','why','youtube','rules']);
+      assert.equal(inputs[3].required, false);
+      assert.equal(inputs[4].min_values, 13);
+      assert.equal(inputs[4].options.length, 13);
+      const values = {username: edition === 'java' ? 'NewPlayer' : 'New Player', age:'18', why:'Build together', youtube};
       f.i.customId = modal.custom_id;
       f.i.isButton = () => false;
       f.i.isModalSubmit = () => true;
-      f.i.fields = {getTextInputValue: key => values[key]};
+      f.i.fields = {getTextInputValue: key => values[key], getStringSelectValues: () => ['raids','pvp','cheats','dupes','bots','lag','evasion','rmt','combatlog','harassment','nsfw','cussing','drama']};
       await f.handle(f.i);
       const saved = f.s.one('SELECT * FROM applications WHERE user_id=?', f.i.user.id);
       assert.equal(saved.state, 'pending');
@@ -156,8 +158,8 @@ for (const changes of [{age:'12'}, {youtube:'https://example.com/channel'}]) {
     const f = fixture(t);
     f.i.user.id = 'new-applicant';
     f.i.customId = 'application-single:java';
-    const values = {username:'NewPlayer',age:'18',heard:'Friend',why:'Build together',youtube:'',...changes};
-    f.i.fields = {getTextInputValue: key => values[key]};
+    const values = {username:'NewPlayer',age:'18',why:'Build together',youtube:'',...changes};
+    f.i.fields = {getTextInputValue: key => values[key], getStringSelectValues: () => ['raids','pvp','cheats','dupes','bots','lag','evasion','rmt','combatlog','harassment','nsfw','cussing','drama']};
     await f.handle(f.i);
     assert.equal(f.s.one('SELECT id FROM applications WHERE user_id=?', f.i.user.id), undefined);
     assert.match(f.responses.at(-1).content, /at least 13|YouTube channel URL/);
@@ -170,8 +172,8 @@ test('Accepted member can open the same form and submit a new account through Di
   f.i.showModal=async value=>{modal=value.toJSON();}; await f.handle(f.i);
   assert.equal(modal.custom_id,'application-single:bedrock');
   f.i.customId=modal.custom_id;
-  const values={username:'New Xbox',age:'18',heard:'Already a member',why:'New account',youtube:''};
-  f.i.fields={getTextInputValue:key=>values[key]}; await f.handle(f.i);
+  const values={username:'New Xbox',age:'18',why:'New account',youtube:''};
+  f.i.fields={getTextInputValue:key=>values[key],getStringSelectValues:()=>['raids','pvp','cheats','dupes','bots','lag','evasion','rmt','combatlog','harassment','nsfw','cussing','drama']}; await f.handle(f.i);
   assert.match(f.responses.at(-1).content,/Application submitted/);
   assert.equal(f.s.one("SELECT count(*) AS n FROM applications WHERE user_id='applicant'").n,2);
 });
@@ -189,8 +191,8 @@ for (const edition of ['java','bedrock']) test(`An approved applicant can click 
   await f.handle(f.i);
   assert.equal(modal.custom_id,'application-reapply:'+edition);
   f.i.isButton=()=>false; f.i.isModalSubmit=()=>true; f.i.customId=modal.custom_id;
-  const values={username:edition==='java'?'CorrectJavaName':'Correct Gamertag',age:'18',heard:'Friend',why:'I corrected my account name',youtube:''};
-  f.i.fields={getTextInputValue:key=>values[key]};
+  const values={username:edition==='java'?'CorrectJavaName':'Correct Gamertag',age:'18',why:'I corrected my account name',youtube:''};
+  f.i.fields={getTextInputValue:key=>values[key],getStringSelectValues:()=>['raids','pvp','cheats','dupes','bots','lag','evasion','rmt','combatlog','harassment','nsfw','cussing','drama']};
   await f.handle(f.i);
   const replacement=f.s.one("SELECT * FROM applications WHERE user_id='applicant' AND state='pending'");
   assert.equal(replacement.edition,edition);
@@ -208,4 +210,15 @@ test('Rejected applicants can reapply immediately according to /status',async t=
   await f.handle(f.i);
   assert.match(f.responses.at(-1).content,/use \/apply again right away/i);
   assert.doesNotMatch(f.responses.at(-1).content,/in a day|<t:/i);
+});
+
+test('Single form refuses an applicant who does not agree to every rule', async t => {
+  const f = fixture(t);
+  f.i.user.id = 'new-applicant';
+  f.i.customId = 'application-single:java';
+  const values = {username:'NewPlayer',age:'18',why:'Build together',youtube:''};
+  f.i.fields = {getTextInputValue: key => values[key], getStringSelectValues: () => ['raids','pvp']};
+  await f.handle(f.i);
+  assert.equal(f.s.one('SELECT id FROM applications WHERE user_id=?', f.i.user.id), undefined);
+  assert.match(f.responses.at(-1).content, /must agree to every SMP rule/);
 });

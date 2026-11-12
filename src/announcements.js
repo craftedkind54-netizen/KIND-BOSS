@@ -15,6 +15,9 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  FileUploadBuilder,
+  LabelBuilder,
+  AttachmentBuilder,
   Events,
   PermissionsBitField,
 } = require('discord.js');
@@ -378,6 +381,7 @@ function createDraft(userId, type) {
       description: '',
       extra: '',
       image: '',
+      files: [],
       pingEveryone: false,
       completed: false,
     },
@@ -518,12 +522,19 @@ function announcementModal(draft) {
     .setRequired(false);
   if (draft.announcement.extra) extra.setValue(draft.announcement.extra);
 
-  const image = new TextInputBuilder()
-    .setCustomId('announcement_image')
-    .setLabel('Image URL')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(false);
-  if (draft.announcement.image) image.setValue(draft.announcement.image);
+  const existingFiles = (draft.announcement.files || []).length;
+  const upload = new LabelBuilder()
+    .setLabel('Images & Attachments')
+    .setDescription(existingFiles
+      ? `${existingFiles} file(s) attached. Drop new files to replace them, or leave empty to keep them.`
+      : 'Drop images or files here (up to 10). The first image shows in the announcement.')
+    .setFileUploadComponent(
+      new FileUploadBuilder()
+        .setCustomId('announcement_files')
+        .setMinValues(0)
+        .setMaxValues(10)
+        .setRequired(false)
+    );
 
   const ping = new TextInputBuilder()
     .setCustomId('announcement_ping')
@@ -535,10 +546,10 @@ function announcementModal(draft) {
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(description),
-    new ActionRowBuilder().addComponents(extra),
-    new ActionRowBuilder().addComponents(image),
-    new ActionRowBuilder().addComponents(ping)
+    new ActionRowBuilder().addComponents(extra)
   );
+  modal.addLabelComponents(upload);
+  modal.addComponents(new ActionRowBuilder().addComponents(ping));
 
   return modal;
 }
@@ -891,7 +902,7 @@ function pollPreview(draft) {
     ].join('\n'));
 }
 
-function announcementEmbed(draft, eventLinks = [], pollURL = '') {
+function announcementEmbed(draft, eventLinks = [], pollURL = '', posting = false) {
   const fallbackDate = draft.events?.[0]?.date || draft.schedule?.date || null;
   const embed = new EmbedBuilder()
     .setTitle(draft.announcement.title)
@@ -911,14 +922,79 @@ function announcementEmbed(draft, eventLinks = [], pollURL = '') {
 
   if (pollURL) embed.addFields({ name: '📊 Poll', value: `[Open Poll](${pollURL})` });
 
-  if (draft.announcement.image && /^https?:\/\//i.test(draft.announcement.image)) {
-    embed.setImage(draft.announcement.image);
-  }
-
+  applyAnnouncementMedia(embed, draft, posting);
   return embed;
 }
 
-function flashEmbed(draft) {
+// ----- Uploaded announcement files (drop box) -----
+const ANNOUNCEMENT_FILES_DIR = path.join(DATA_DIR, 'announcement-files');
+const MAX_ANNOUNCEMENT_FILE_BYTES = 10 * 1024 * 1024;
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
+
+function safeFileName(name, index) {
+  const cleaned = String(name || `file-${index}`).replace(/[^\w.\-]+/g, '_').slice(-80);
+  return `${index}-${cleaned}`;
+}
+
+async function saveUploadedAnnouncementFiles(draft, attachments) {
+  const dir = path.join(ANNOUNCEMENT_FILES_DIR, draft.id);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  const saved = [];
+  const skipped = [];
+  let index = 0;
+  for (const attachment of attachments.values()) {
+    index += 1;
+    if (attachment.size > MAX_ANNOUNCEMENT_FILE_BYTES) {
+      skipped.push(`${attachment.name} (over 10 MB)`);
+      continue;
+    }
+    const response = await fetch(attachment.url);
+    if (!response.ok) {
+      skipped.push(`${attachment.name} (download failed)`);
+      continue;
+    }
+    const name = safeFileName(attachment.name, index);
+    const filePath = path.join(dir, name);
+    fs.writeFileSync(filePath, Buffer.from(await response.arrayBuffer()));
+    const isImage = (attachment.contentType || '').startsWith('image/') || IMAGE_EXT.test(name);
+    saved.push({ name, path: filePath, isImage });
+  }
+  return { saved, skipped };
+}
+
+function existingAnnouncementFiles(draft) {
+  return (draft.announcement?.files || []).filter((file) => fs.existsSync(file.path));
+}
+
+function announcementAttachments(draft) {
+  return existingAnnouncementFiles(draft).map((file) => new AttachmentBuilder(file.path, { name: file.name }));
+}
+
+// posting=true: show the first uploaded image inside the embed (files are sent with the message).
+// posting=false (previews): list file names instead.
+function applyAnnouncementMedia(embed, draft, posting = false) {
+  const files = existingAnnouncementFiles(draft);
+  const firstImage = files.find((file) => file.isImage);
+  if (posting && firstImage) {
+    embed.setImage(`attachment://${firstImage.name}`);
+  } else if (draft.announcement.image && /^https?:\/\//i.test(draft.announcement.image)) {
+    embed.setImage(draft.announcement.image);
+  }
+  if (!posting && files.length) {
+    embed.addFields({
+      name: '📎 Attachments',
+      value: files.map((file) => `• ${file.name.replace(/^\d+-/, '')}`).join('\n').slice(0, 1024),
+    });
+  }
+}
+
+function cleanupAnnouncementFiles(draft) {
+  if (!draft?.id) return;
+  fs.rmSync(path.join(ANNOUNCEMENT_FILES_DIR, draft.id), { recursive: true, force: true });
+}
+
+function flashEmbed(draft, posting = false) {
   const embed = new EmbedBuilder()
     .setDescription(convertTimesInText(draft.announcement.description, null))
     .setTimestamp();
@@ -930,9 +1006,7 @@ function flashEmbed(draft) {
     });
   }
 
-  if (draft.announcement.image && /^https?:\/\//i.test(draft.announcement.image)) {
-    embed.setImage(draft.announcement.image);
-  }
+  applyAnnouncementMedia(embed, draft, posting);
   return embed;
 }
 
@@ -1071,9 +1145,11 @@ async function postFlash(draft) {
 
   const message = await channel.send({
     content,
-    embeds: [flashEmbed(draft)],
+    embeds: [flashEmbed(draft, true)],
+    files: announcementAttachments(draft),
     allowedMentions,
   });
+  cleanupAnnouncementFiles(draft);
 
   return { announcementURL: message.url, eventLinks: [], pollURL: '' };
 }
@@ -1097,11 +1173,13 @@ async function postDraft(draft) {
   const announcements = await client.channels.fetch(ANNOUNCEMENTS_CHANNEL_ID);
   const mainMessage = await announcements.send({
     content: draft.announcement.pingEveryone ? '@everyone' : undefined,
-    embeds: [announcementEmbed(draft, result.eventLinks, result.pollURL)],
+    embeds: [announcementEmbed(draft, result.eventLinks, result.pollURL, true)],
+    files: announcementAttachments(draft),
     allowedMentions: {
       parse: draft.announcement.pingEveryone ? ['everyone', 'users'] : ['users'],
     },
   });
+  cleanupAnnouncementFiles(draft);
 
   result.announcementURL = mainMessage.url;
 
@@ -1779,6 +1857,8 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     if (interaction.customId === 'announcement_modal') {
+      // Downloading dropped files can take longer than Discord's 3-second window.
+      await interaction.deferReply({ ephemeral: true });
       if (draft.type === 'flash') {
         draft.announcement.title = '';
       } else {
@@ -1795,19 +1875,28 @@ client.on(Events.InteractionCreate, async interaction => {
         interaction.guild
       );
 
-      draft.announcement.image = interaction.fields.getTextInputValue('announcement_image').trim();
       const pingInput = interaction.fields.getTextInputValue('announcement_ping').trim().toUpperCase();
 
       if (draft.type === 'flash') {
         if (pingInput !== 'ROLE' && pingInput !== 'EVERYONE') {
-          return interaction.reply({ content: '❌ For a Flash Announcement, type **ROLE** or **EVERYONE**.', ephemeral: true });
+          return interaction.editReply({ content: '❌ For a Flash Announcement, type **ROLE** or **EVERYONE**.' });
         }
         draft.announcement.pingEveryone = pingInput === 'EVERYONE';
       } else {
         if (pingInput !== 'YES' && pingInput !== 'NO') {
-          return interaction.reply({ content: '❌ Type **YES** or **NO** for @everyone.', ephemeral: true });
+          return interaction.editReply({ content: '❌ Type **YES** or **NO** for @everyone.' });
         }
         draft.announcement.pingEveryone = pingInput === 'YES';
+      }
+
+      const uploaded = interaction.fields.getUploadedFiles('announcement_files');
+      if (uploaded?.size) {
+        const { saved, skipped } = await saveUploadedAnnouncementFiles(draft, uploaded);
+        draft.announcement.files = saved;
+        draft.announcement.image = '';
+        if (skipped.length) {
+          await interaction.followUp({ content: `⚠️ Skipped: ${skipped.join(', ')}`, ephemeral: true }).catch(() => {});
+        }
       }
 
       draft.announcement.completed = true;
@@ -1906,7 +1995,11 @@ client.on(Events.InteractionCreate, async interaction => {
   } catch (error) {
     console.error('Modal error:', error);
 
-    if (!interaction.replied && !interaction.deferred) {
+    if (interaction.deferred && !interaction.replied) {
+      await interaction.editReply({
+        content: `❌ Could not process the form: ${error.message || 'Unexpected error.'}`,
+      }).catch(() => {});
+    } else if (!interaction.replied && !interaction.deferred) {
       await interaction.reply({
         content: '❌ Something went wrong. Check Railway logs.',
         ephemeral: true,

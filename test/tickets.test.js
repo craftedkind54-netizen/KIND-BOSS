@@ -37,12 +37,11 @@ test('all staff: duplicate owner fallback deduplicated and every overwrite resol
  assert.equal(entries.filter(e=>e.type===0&&e.allow).length,4);
  assert.ok(entries.find(e=>e.id==='1555726622982668408').allow.includes(discord.PermissionFlagsBits.ViewChannel));
 });
-test('specific staff: selected member and General Staff get access',async()=>{
+test('specific staff: only the selected member gets access, no staff roles',async()=>{
  const f=fixture(); assert.equal((await f.create({type:'specific_staff',allowedRoles:[],allowedUsers:[f.selected.id,f.selected.id]})).success,true);
  const entries=f.calls[0].permissionOverwrites;
  assert.equal(entries.filter(e=>e.id===f.selected.id).length,1);
- assert.ok(entries.find(e=>e.id==='1555726622982668408').allow.includes(discord.PermissionFlagsBits.ViewChannel));
- for(const id of f.roleIds.filter(id=>id!=='1555726622982668408')) assert.ok(entries.find(e=>e.id===id).deny);
+ for(const id of f.roleIds) assert.ok(entries.find(e=>e.id===id).deny.includes(discord.PermissionFlagsBits.ViewChannel));
  assert.equal(entries.find(e=>e.id===f.selected.id).type,1);
 });
 test('deleted optional roles skipped; all roles missing stops creation',async()=>{

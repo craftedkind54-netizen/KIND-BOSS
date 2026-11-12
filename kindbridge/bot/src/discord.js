@@ -1,5 +1,5 @@
 import { Client, GatewayIntentBits, MessageFlags, PermissionFlagsBits, SlashCommandBuilder,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, LabelBuilder, RadioGroupBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, LabelBuilder, CheckboxGroupBuilder,
   EmbedBuilder, AttachmentBuilder } from 'discord.js';
 import { submit, decide, joining } from './applications.js';
 import { quotaDay, channelTarget } from './youtube.js';
@@ -17,6 +17,18 @@ function form(id, title, fields) {
     return field;
   }));
 }
+const RULES = [
+  ['cheats', 'I agree: no hacked clients, x-ray or cheats'],
+  ['dupes', 'I agree: no duping or exploiting bugs'],
+  ['lag', 'I agree: no lag machines'],
+  ['bots', 'I agree: no bots or AFK farms that break rules'],
+  ['pvp', 'I agree: PvP is allowed, but never at spawn'],
+  ['raids', 'I agree: follow the claim and raiding rules'],
+  ['combatlog', 'I agree: no logging out to escape a fight'],
+  ['respect', 'I agree: no harassment, hate or NSFW content'],
+  ['chat', 'I agree: keep chat friendly and drama-free'],
+  ['evasion', 'I agree: no ban evasion or selling items for real money']
+];
 export function applicationForm(edition, reapply = false) {
   const modal = form(`${reapply ? 'application-reapply' : 'application-single'}:${edition}`, 'Kind SMP application', [
     ['username', edition === 'java' ? 'Minecraft Java username' : 'Xbox gamertag (no Floodgate prefix)', 16, false, true,
@@ -25,18 +37,17 @@ export function applicationForm(edition, reapply = false) {
     ['why', 'Why do you want to join?', 1000, true, true, 'Tell us a bit about yourself and how you heard about Kind SMP.'],
     ['youtube', 'YouTube channel link (optional)', 200, false, false, 'Example: https://www.youtube.com/@YourHandle']
   ]);
-  // Discord allows 5 questions per form, so the rules are one I agree / I disagree radio question.
-  const rules = new RadioGroupBuilder().setCustomId('rules').setRequired(true).addOptions(
-    { value: 'agree', label: 'I agree', description: 'I’ve read the rules and will follow all of them.' },
-    { value: 'disagree', label: 'I disagree', description: 'I don’t agree to the SMP rules.' }
-  );
-  return modal.addLabelComponents(new LabelBuilder().setLabel('Do you agree to follow all the SMP rules?')
-    .setDescription('No cheats, dupes, exploits, lag machines or harassment. PvP is allowed everywhere except spawn.').setRadioGroupComponent(rules));
+  // Discord allows 5 questions per form, so the rules are one tick-box list (Discord's max is 10 boxes).
+  const rules = new CheckboxGroupBuilder().setCustomId('rules').setRequired(true).setMinValues(RULES.length).setMaxValues(RULES.length)
+    .addOptions(RULES.map(([value, label]) => ({ value, label })));
+  return modal.addLabelComponents(new LabelBuilder().setLabel('Do you agree to the SMP rules?')
+    .setDescription('Tick every box to agree. You must agree to all of them to join.').setCheckboxGroupComponent(rules));
 }
 function applicationAnswers(i, edition) {
   const data = { edition };
   for (const key of ['username','age','why','youtube']) data[key] = i.fields.getTextInputValue(key).trim();
-  if (i.fields.getRadioGroup('rules') !== 'agree') throw new Error('You must agree to the SMP rules to join Kind SMP. Read the rules, then apply again if you agree.');
+  const agreed = new Set(i.fields.getCheckboxGroup('rules') ?? []);
+  if (!RULES.every(([value]) => agreed.has(value))) throw new Error('You must agree to every SMP rule to join Kind SMP. Read the rules, then apply again and tick every box.');
   data.rules = 'yes';
   return data;
 }

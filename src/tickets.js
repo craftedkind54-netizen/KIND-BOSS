@@ -523,12 +523,13 @@ async function createTicket({
     const roles = await guild.roles.fetch();
     const staffRoles = [...new Set(STAFF_ROLE_IDS.map(id => id.trim()))]
       .filter(id => id !== guild.id && roles.has(id));
-    // General Staff can view and reply in every support ticket, including
-    // tickets routed to selected staff members. Other staff roles remain
-    // governed by the ticket type and selected-role settings.
+    // General Staff can view and reply in support tickets, except tickets
+    // routed to specific staff members: those stay private to the player and
+    // the staff they selected. Other staff roles remain governed by the
+    // ticket type and selected-role settings.
     const permittedRoles = new Set([
       ...allowedRoles.map(id => id.trim()),
-      KIND_SMP_GENERAL_STAFF_ROLE_ID,
+      ...(type === 'specific_staff' ? [] : [KIND_SMP_GENERAL_STAFF_ROLE_ID]),
     ]);
     if (type === 'all_staff' && !staffRoles.some(id => permittedRoles.has(id))) {
       return { success: false, message: '❌ No valid support staff roles are configured. Please contact an owner.' };

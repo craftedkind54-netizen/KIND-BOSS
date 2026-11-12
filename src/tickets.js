@@ -775,6 +775,8 @@ async function createTranscript(
 
   const lines = [];
 
+  const evidence = [];
+
   lines.push(
     '=================================================='
   );
@@ -857,12 +859,25 @@ async function createTranscript(
         const attachment
         of message.attachments.values()
       ) {
-        lines.push(
-          `Name: ${attachment.name || 'Attachment'}`
-        );
+        const evidenceNumber =
+          evidence.length + 1;
+
+        const safeName =
+          `${String(evidenceNumber).padStart(3, '0')}-${(attachment.name || 'attachment').replace(/[^\w.\-]/g, '_')}`;
+
+        evidence.push({
+          name:
+            safeName,
+          url:
+            attachment.url,
+          size:
+            attachment.size || 0,
+          author:
+            message.author.tag,
+        });
 
         lines.push(
-          `URL: ${attachment.url}`
+          `Evidence #${evidenceNumber}: ${attachment.name || 'Attachment'} (saved as ${safeName})`
         );
       }
     }
@@ -897,13 +912,128 @@ async function createTranscript(
       'utf8'
     );
 
-  return new AttachmentBuilder(
-    buffer,
-    {
-      name:
-        `${channel.name}-conversation-history.txt`,
+  return {
+    file:
+      new AttachmentBuilder(
+        buffer,
+        {
+          name:
+            `${channel.name}-conversation-history.txt`,
+        }
+      ),
+    evidence,
+  };
+}
+
+// =====================================================
+// EVIDENCE ARCHIVE
+// Discord deletes attachments with the ticket channel,
+// so download every file and re-upload it to the archive.
+// =====================================================
+
+function getUploadLimit(
+  guild
+) {
+  const tier =
+    guild?.premiumTier || 0;
+
+  if (tier >= 3) return 100 * 1024 * 1024;
+  if (tier >= 2) return 50 * 1024 * 1024;
+  return 10 * 1024 * 1024;
+}
+
+async function archiveEvidence(
+  archiveChannel,
+  ticketName,
+  evidence
+) {
+  if (evidence.length === 0) {
+    return { saved: 0, failed: [] };
+  }
+
+  const limit =
+    getUploadLimit(
+      archiveChannel.guild
+    );
+
+  const failed = [];
+  let saved = 0;
+  let batch = [];
+  let batchBytes = 0;
+
+  const flush = async () => {
+    if (batch.length === 0) return;
+
+    await archiveChannel.send({
+      content:
+        `📎 Evidence from **#${ticketName}**`,
+      files:
+        batch,
+    });
+
+    saved += batch.length;
+    batch = [];
+    batchBytes = 0;
+  };
+
+  for (const item of evidence) {
+    if (item.size > limit) {
+      failed.push(`${item.name} (too large to re-upload)`);
+      continue;
     }
-  );
+
+    let data;
+
+    try {
+      const response =
+        await fetch(item.url);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      data =
+        Buffer.from(
+          await response.arrayBuffer()
+        );
+    } catch (error) {
+      console.error(
+        `Evidence download failed (${item.name}):`,
+        error
+      );
+      failed.push(`${item.name} (download failed)`);
+      continue;
+    }
+
+    if (
+      batch.length >= 10 ||
+      batchBytes + data.length > limit
+    ) {
+      await flush();
+    }
+
+    batch.push(
+      new AttachmentBuilder(
+        data,
+        { name: item.name }
+      )
+    );
+    batchBytes += data.length;
+  }
+
+  await flush();
+
+  if (failed.length > 0) {
+    await archiveChannel.send({
+      content:
+        [
+          `⚠️ Some evidence from **#${ticketName}** could not be saved:`,
+          ...failed.map((f) => `• ${f}`),
+        ].join('\n').slice(0, 1900),
+    });
+  }
+
+  return { saved, failed };
 }
 
 // =====================================================
@@ -1129,9 +1259,19 @@ async function closeTicket(
       ],
 
       files: [
-        transcript,
+        transcript.file,
       ],
     });
+
+    // =================================================
+    // SAVE IMAGES / EVIDENCE (before channel delete)
+    // =================================================
+
+    await archiveEvidence(
+      archiveChannel,
+      channel.name,
+      transcript.evidence
+    );
 
     // =================================================
     // SUCCESS

@@ -6,7 +6,8 @@ export function validateApplication(a) {
   if (!pattern.test(a.username)) throw new Error(a.edition === 'java' ? 'Enter a Java username (3–16 letters, numbers or underscores).' : 'Enter your exact Xbox gamertag, including spaces, without the Floodgate prefix.');
   if (!/^\d{1,3}$/.test(String(a.age)) || Number(a.age) < 13 || Number(a.age) > 120) throw new Error('Applicants must be at least 13. Enter a valid age in years.');
   if (!['yes', 'i agree', 'agree'].includes(String(a.rules).trim().toLowerCase())) throw new Error('You must agree to the SMP rules by entering Yes.');
-  for (const key of ['heard', 'why']) if (!a[key]?.trim() || a[key].length > 1000) throw new Error('Please answer both application questions (up to 1,000 characters each).');
+  if (!a.why?.trim() || a.why.length > 1000) throw new Error('Please tell us why you want to join (up to 1,000 characters).');
+  if (a.heard && a.heard.length > 1000) throw new Error('Keep how you heard about us under 1,000 characters.');
   if (a.youtube && !/^https:\/\/(www\.)?youtube\.com\/(channel\/UC[\w-]{22}|@[\w.%-]+)\/?$/i.test(a.youtube)) throw new Error('Use a YouTube channel URL such as https://www.youtube.com/@YourHandle, or leave it blank.');
   return a;
 }

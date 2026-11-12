@@ -1,5 +1,5 @@
 import { Client, GatewayIntentBits, MessageFlags, PermissionFlagsBits, SlashCommandBuilder,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, LabelBuilder, StringSelectMenuBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, LabelBuilder, RadioGroupBuilder,
   EmbedBuilder, AttachmentBuilder } from 'discord.js';
 import { submit, decide, joining } from './applications.js';
 import { quotaDay, channelTarget } from './youtube.js';
@@ -17,22 +17,6 @@ function form(id, title, fields) {
     return field;
   }));
 }
-// Each applicant must tick every rule. Labels must stay at or under 100 characters.
-export const RULE_AGREEMENTS = [
-  ['raids', 'Outside spawn and claims my base can be raided or griefed, and staff won’t fix it'],
-  ['pvp', 'PvP is not allowed in spawn, but is allowed everywhere else, including inside claims'],
-  ['cheats', 'I won’t use hacked clients, X-ray, ESP, or freecam to find bases'],
-  ['dupes', 'I won’t dupe items or abuse bugs and exploits; I’ll report them instead'],
-  ['bots', 'I won’t use bots or macros that play the game for me'],
-  ['lag', 'I won’t build lag machines or try to crash the server'],
-  ['evasion', 'I won’t use alts or VPNs to get around a ban, jail, or mute'],
-  ['rmt', 'I won’t sell items, bases, or accounts for real money'],
-  ['combatlog', 'I won’t log out to avoid dying in a fight (combat logging)'],
-  ['harassment', 'I won’t harass, threaten, or dox anyone, in chat or in DMs'],
-  ['nsfw', 'I won’t post NSFW content, including in skins, builds, books, and signs'],
-  ['cussing', 'I won’t cuss in public chat, even if the filter misses it'],
-  ['drama', 'Serious problems go to #🤝-Support, not public chat']
-];
 export function applicationForm(edition, reapply = false) {
   const modal = form(`${reapply ? 'application-reapply' : 'application-single'}:${edition}`, 'Kind SMP application', [
     ['username', edition === 'java' ? 'Minecraft Java username' : 'Xbox gamertag (no Floodgate prefix)', 16, false, true,
@@ -41,18 +25,18 @@ export function applicationForm(edition, reapply = false) {
     ['why', 'Why do you want to join?', 1000, true, true, 'Tell us a bit about yourself and how you heard about Kind SMP.'],
     ['youtube', 'YouTube channel link (optional)', 200, false, false, 'Example: https://www.youtube.com/@YourHandle']
   ]);
-  const rules = new StringSelectMenuBuilder().setCustomId('rules').setPlaceholder('Tick all 13 rules to agree')
-    .setMinValues(RULE_AGREEMENTS.length).setMaxValues(RULE_AGREEMENTS.length)
-    .addOptions(RULE_AGREEMENTS.map(([value, label]) => ({ value, label: `✅ I agree: ${label}`.slice(0, 100) })));
-  return modal.addLabelComponents(new LabelBuilder().setLabel('Do you agree to the SMP rules?')
-    .setDescription('You must agree to every rule to join. Read the full rules first.').setStringSelectMenuComponent(rules));
+  // Discord allows 5 questions per form, so the rules are one I agree / I disagree radio question.
+  const rules = new RadioGroupBuilder().setCustomId('rules').setRequired(true).addOptions(
+    { value: 'agree', label: 'I agree', description: 'I’ve read the rules and will follow all of them.' },
+    { value: 'disagree', label: 'I disagree', description: 'I don’t agree to the SMP rules.' }
+  );
+  return modal.addLabelComponents(new LabelBuilder().setLabel('Do you agree to follow all the SMP rules?')
+    .setDescription('No cheats, dupes, exploits, lag machines or harassment. PvP is allowed everywhere except spawn.').setRadioGroupComponent(rules));
 }
 function applicationAnswers(i, edition) {
   const data = { edition };
   for (const key of ['username','age','why','youtube']) data[key] = i.fields.getTextInputValue(key).trim();
-  const agreed = new Set(i.fields.getStringSelectValues('rules'));
-  const missing = RULE_AGREEMENTS.filter(([value]) => !agreed.has(value));
-  if (missing.length) throw new Error(`You must agree to every SMP rule to join. Not agreed: ${missing.map(([, label]) => label).join('; ')}`);
+  if (i.fields.getRadioGroup('rules') !== 'agree') throw new Error('You must agree to the SMP rules to join Kind SMP. Read the rules, then apply again if you agree.');
   data.rules = 'yes';
   return data;
 }

@@ -1,5 +1,5 @@
 import { Client, GatewayIntentBits, MessageFlags, PermissionFlagsBits, SlashCommandBuilder,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, LabelBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, LabelBuilder, StringSelectMenuBuilder,
   EmbedBuilder, AttachmentBuilder } from 'discord.js';
 import { submit, decide, joining } from './applications.js';
 import { quotaDay, channelTarget } from './youtube.js';
@@ -17,14 +17,45 @@ function form(id, title, fields) {
     return field;
   }));
 }
-export const applicationForm = (edition, reapply = false) => form(`${reapply ? 'application-reapply' : 'application-single'}:${edition}`, 'Kind SMP application', [
-  ['username', edition === 'java' ? 'Minecraft Java username' : 'Xbox gamertag (no Floodgate prefix)', 16, false, true,
-    'By submitting this application, you agree to follow the SMP rules.'],
-  ['age', 'How old are you? (13 or older)', 3],
-  ['heard', 'How did you hear about us?', 1000, true],
-  ['why', 'Why do you want to join?', 1000, true],
-  ['youtube', 'YouTube channel link (optional)', 200, false, false]
-]);
+// Each applicant must tick every rule. Labels must stay at or under 100 characters.
+export const RULE_AGREEMENTS = [
+  ['raids', 'Outside spawn and claims my base can be raided or griefed, and staff won’t fix it'],
+  ['pvp', 'PvP is not allowed in spawn, but is allowed everywhere else, including inside claims'],
+  ['cheats', 'I won’t use hacked clients, X-ray, ESP, or freecam to find bases'],
+  ['dupes', 'I won’t dupe items or abuse bugs and exploits; I’ll report them instead'],
+  ['bots', 'I won’t use bots or macros that play the game for me'],
+  ['lag', 'I won’t build lag machines or try to crash the server'],
+  ['evasion', 'I won’t use alts or VPNs to get around a ban, jail, or mute'],
+  ['rmt', 'I won’t sell items, bases, or accounts for real money'],
+  ['combatlog', 'I won’t log out to avoid dying in a fight (combat logging)'],
+  ['harassment', 'I won’t harass, threaten, or dox anyone, in chat or in DMs'],
+  ['nsfw', 'I won’t post NSFW content, including in skins, builds, books, and signs'],
+  ['cussing', 'I won’t cuss in public chat, even if the filter misses it'],
+  ['drama', 'Serious problems go to #🤝-Support, not public chat']
+];
+export function applicationForm(edition, reapply = false) {
+  const modal = form(`${reapply ? 'application-reapply' : 'application-single'}:${edition}`, 'Kind SMP application', [
+    ['username', edition === 'java' ? 'Minecraft Java username' : 'Xbox gamertag (no Floodgate prefix)', 16, false, true,
+      'By submitting this application, you agree to follow the SMP rules.'],
+    ['age', 'How old are you? (13 or older)', 3],
+    ['why', 'Why do you want to join?', 1000, true, true, 'Tell us a bit about yourself and how you heard about Kind SMP.'],
+    ['youtube', 'YouTube channel link (optional)', 200, false, false, 'Example: https://www.youtube.com/@YourHandle']
+  ]);
+  const rules = new StringSelectMenuBuilder().setCustomId('rules').setPlaceholder('Tick all 13 rules to agree')
+    .setMinValues(RULE_AGREEMENTS.length).setMaxValues(RULE_AGREEMENTS.length)
+    .addOptions(RULE_AGREEMENTS.map(([value, label]) => ({ value, label: `✅ I agree: ${label}`.slice(0, 100) })));
+  return modal.addLabelComponents(new LabelBuilder().setLabel('Do you agree to the SMP rules?')
+    .setDescription('You must agree to every rule to join. Read the full rules first.').setStringSelectMenuComponent(rules));
+}
+function applicationAnswers(i, edition) {
+  const data = { edition };
+  for (const key of ['username','age','why','youtube']) data[key] = i.fields.getTextInputValue(key).trim();
+  const agreed = new Set(i.fields.getStringSelectValues('rules'));
+  const missing = RULE_AGREEMENTS.filter(([value]) => !agreed.has(value));
+  if (missing.length) throw new Error(`You must agree to every SMP rule to join. Not agreed: ${missing.map(([, label]) => label).join('; ')}`);
+  data.rules = 'yes';
+  return data;
+}
 function applicationPanelBody(c) {
   return {
     content: `## Welcome to Kind SMP\nApply to join our Java and Bedrock SMP. You must be **13 or older**.\nRead <#${c.rules}> first. Answers are shared with staff in a private review channel.\nNew Minecraft account or need to correct a name? Use /apply. If an approved account was not added to the whitelist, use /status and choose Reapply for Java or Bedrock. A reapplication cancels the old pending whitelist request and goes to staff for approval. One application can await review at a time. If rejected, correct your answers and use /apply again right away.\nApply and add your optional YouTube channel in one form. By submitting, you agree to follow the SMP rules. The supplied channel is linked automatically after staff approval and whitelisting.`,
@@ -227,15 +258,13 @@ export function createDiscord(store, c, yt, sharedClient = null) {
         return i.showModal(applicationForm(edition, true));
       }
       if (['application-single:java','application-single:bedrock'].includes(id)) {
-        const data = { edition: id.split(':')[1], rules: 'yes' };
-        for (const key of ['username','age','heard','why','youtube']) data[key] = i.fields.getTextInputValue(key).trim();
+        const data = applicationAnswers(i, id.split(':')[1]);
         const appId = submit(store, i.user.id, data, c.cooldown);
         store.run('DELETE FROM drafts WHERE user_id=?', i.user.id);
         return reply(`Application submitted to staff. Reference: ${appId.slice(0,8)}. Use /status for updates.`);
       }
       if (['application-reapply:java','application-reapply:bedrock'].includes(id)) {
-        const data = { edition: id.split(':')[1], rules: 'yes' };
-        for (const key of ['username','age','heard','why','youtube']) data[key] = i.fields.getTextInputValue(key).trim();
+        const data = applicationAnswers(i, id.split(':')[1]);
         const appId = submit(store, i.user.id, data, c.cooldown, Date.now(), {reapplyApproved:true});
         store.run('DELETE FROM drafts WHERE user_id=?', i.user.id);
         return reply(`Corrected ${data.edition} application submitted to staff. Reference: ${appId.slice(0,8)}. The previous pending whitelist request was cancelled. Use /status for updates.`);
@@ -386,7 +415,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
         const a = JSON.parse(app.answers);
         const embed = new EmbedBuilder().setColor(0x65b891).setTitle(`Kind SMP application · ${app.id.slice(0,8)}`)
           .setDescription(`Applicant: <@${app.user_id}>\nEdition: ${app.edition}`)
-          .addFields({name:'Minecraft username',value:app.username},{name:'Age',value:a.age},{name:'Agrees to rules',value:a.rules},{name:'How they heard about us',value:a.heard},{name:'Why they want to join',value:a.why},{name:'YouTube channel (optional)',value:a.youtube || 'Not provided'});
+          .addFields({name:'Minecraft username',value:app.username},{name:'Age',value:a.age},{name:'Agrees to rules',value:a.rules === 'yes' ? '✅ Agreed to all SMP rules' : a.rules},...(a.heard ? [{name:'How they heard about us',value:a.heard}] : []),{name:'Why they want to join',value:a.why},{name:'YouTube channel (optional)',value:a.youtube || 'Not provided'});
         if (a.previousAccount) embed.addFields({name:'Account change', value: a.previousAccount.edition + ': ' + a.previousAccount.username + ' → ' + app.edition + ': ' + app.username + '. Current membership stays active until whitelisting succeeds. Staff must remove the old whitelist entry if needed. Existing YouTube links are retained.'});
         const msg = await send(c.log,{embeds:[embed],components:[row(button(`approve:${app.id}`,'Approve',ButtonStyle.Success),button(`reject:${app.id}`,'Reject with reason',ButtonStyle.Danger))]},`application:${app.id}`);
         store.run('UPDATE applications SET log_id=? WHERE id=?',msg.id,app.id);

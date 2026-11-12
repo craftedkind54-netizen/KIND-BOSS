@@ -134,13 +134,13 @@ for (const edition of ['java', 'bedrock']) {
       const inputs = modal.components.map(label => label.component);
       assert.deepEqual(inputs.map(input => input.custom_id), ['username','age','why','youtube','rules']);
       assert.equal(inputs[3].required, false);
-      assert.equal(inputs[4].min_values, 13);
-      assert.equal(inputs[4].options.length, 13);
+      assert.deepEqual(inputs[4].options.map(option => option.label), ['I agree','I disagree']);
+      assert.equal(inputs[4].required, true);
       const values = {username: edition === 'java' ? 'NewPlayer' : 'New Player', age:'18', why:'Build together', youtube};
       f.i.customId = modal.custom_id;
       f.i.isButton = () => false;
       f.i.isModalSubmit = () => true;
-      f.i.fields = {getTextInputValue: key => values[key], getStringSelectValues: () => ['raids','pvp','cheats','dupes','bots','lag','evasion','rmt','combatlog','harassment','nsfw','cussing','drama']};
+      f.i.fields = {getTextInputValue: key => values[key], getRadioGroup: () => 'agree'};
       await f.handle(f.i);
       const saved = f.s.one('SELECT * FROM applications WHERE user_id=?', f.i.user.id);
       assert.equal(saved.state, 'pending');
@@ -159,7 +159,7 @@ for (const changes of [{age:'12'}, {youtube:'https://example.com/channel'}]) {
     f.i.user.id = 'new-applicant';
     f.i.customId = 'application-single:java';
     const values = {username:'NewPlayer',age:'18',why:'Build together',youtube:'',...changes};
-    f.i.fields = {getTextInputValue: key => values[key], getStringSelectValues: () => ['raids','pvp','cheats','dupes','bots','lag','evasion','rmt','combatlog','harassment','nsfw','cussing','drama']};
+    f.i.fields = {getTextInputValue: key => values[key], getRadioGroup: () => 'agree'};
     await f.handle(f.i);
     assert.equal(f.s.one('SELECT id FROM applications WHERE user_id=?', f.i.user.id), undefined);
     assert.match(f.responses.at(-1).content, /at least 13|YouTube channel URL/);
@@ -173,7 +173,7 @@ test('Accepted member can open the same form and submit a new account through Di
   assert.equal(modal.custom_id,'application-single:bedrock');
   f.i.customId=modal.custom_id;
   const values={username:'New Xbox',age:'18',why:'New account',youtube:''};
-  f.i.fields={getTextInputValue:key=>values[key],getStringSelectValues:()=>['raids','pvp','cheats','dupes','bots','lag','evasion','rmt','combatlog','harassment','nsfw','cussing','drama']}; await f.handle(f.i);
+  f.i.fields={getTextInputValue:key=>values[key],getRadioGroup:()=>'agree'}; await f.handle(f.i);
   assert.match(f.responses.at(-1).content,/Application submitted/);
   assert.equal(f.s.one("SELECT count(*) AS n FROM applications WHERE user_id='applicant'").n,2);
 });
@@ -192,7 +192,7 @@ for (const edition of ['java','bedrock']) test(`An approved applicant can click 
   assert.equal(modal.custom_id,'application-reapply:'+edition);
   f.i.isButton=()=>false; f.i.isModalSubmit=()=>true; f.i.customId=modal.custom_id;
   const values={username:edition==='java'?'CorrectJavaName':'Correct Gamertag',age:'18',why:'I corrected my account name',youtube:''};
-  f.i.fields={getTextInputValue:key=>values[key],getStringSelectValues:()=>['raids','pvp','cheats','dupes','bots','lag','evasion','rmt','combatlog','harassment','nsfw','cussing','drama']};
+  f.i.fields={getTextInputValue:key=>values[key],getRadioGroup:()=>'agree'};
   await f.handle(f.i);
   const replacement=f.s.one("SELECT * FROM applications WHERE user_id='applicant' AND state='pending'");
   assert.equal(replacement.edition,edition);
@@ -212,13 +212,13 @@ test('Rejected applicants can reapply immediately according to /status',async t=
   assert.doesNotMatch(f.responses.at(-1).content,/in a day|<t:/i);
 });
 
-test('Single form refuses an applicant who does not agree to every rule', async t => {
+test('Single form refuses an applicant who picks I disagree on the rules', async t => {
   const f = fixture(t);
   f.i.user.id = 'new-applicant';
   f.i.customId = 'application-single:java';
   const values = {username:'NewPlayer',age:'18',why:'Build together',youtube:''};
-  f.i.fields = {getTextInputValue: key => values[key], getStringSelectValues: () => ['raids','pvp']};
+  f.i.fields = {getTextInputValue: key => values[key], getRadioGroup: () => 'disagree'};
   await f.handle(f.i);
   assert.equal(f.s.one('SELECT id FROM applications WHERE user_id=?', f.i.user.id), undefined);
-  assert.match(f.responses.at(-1).content, /must agree to every SMP rule/);
+  assert.match(f.responses.at(-1).content, /must agree to the SMP rules/);
 });

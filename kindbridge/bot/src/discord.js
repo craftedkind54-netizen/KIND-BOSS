@@ -42,7 +42,25 @@ function applicationAnswers(i, edition) {
 }
 function applicationPanelBody(c) {
   return {
-    content: `## Welcome to Kind SMP\nApply to join our Java and Bedrock SMP. You must be **13 or older**.\nRead <#${c.rules}> first. Answers are shared with staff in a private review channel.\nNew Minecraft account or need to correct a name? Use /apply. If an approved account was not added to the whitelist, use /status and choose Reapply for Java or Bedrock. A reapplication cancels the old pending whitelist request and goes to staff for approval. One application can await review at a time. If rejected, correct your answers and use /apply again right away.\nApply and add your optional YouTube channel in one form. By submitting, you agree to follow the SMP rules. The supplied channel is linked automatically after staff approval and whitelisting.`,
+    content: [
+      '## Welcome to Kind SMP',
+      'A friendly survival server for **Java and Bedrock**. You must be **13 or older** to join.',
+      '',
+      '**How to join**',
+      `1. Read <#${c.rules}>.`,
+      '2. Click **Apply · Java** or **Apply · Bedrock** below and fill in the one short form (you can add your YouTube channel too).',
+      '3. Staff review it privately. Once approved, you are whitelisted and get a DM with the server address.',
+      '',
+      '**Server address**',
+      'Java: `' + (c.java || 'yourkindsmp.minekeep.gg') + '`',
+      'Bedrock: `' + (c.bedrock || 'yourkindsmp.bedrock.minekeep.gg') + '`' + (c.bedrockPort ? ' • Port: `' + c.bedrockPort + '`' : ''),
+      '',
+      '**Good to know**',
+      '• Wrong username or a new account? Use **/apply**. Approved but not whitelisted? Use **/status** and choose Reapply.',
+      '• Rejected? Fix your answers and apply again right away.',
+      '• Leaving the Discord removes you from the whitelist automatically.',
+      '• Trouble getting in? DM **KindCrafted**.'
+    ].join('\n'),
     components: [row(button('edition:java','Apply · Java'), button('edition:bedrock','Apply · Bedrock'))]
   };
 }

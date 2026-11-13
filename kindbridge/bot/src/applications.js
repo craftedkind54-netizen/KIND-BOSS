@@ -75,3 +75,23 @@ export function returnFailedWhitelistsToReview(store) {
     return rows.length;
   });
 }
+// Staff lookup: what the bot knows about a Minecraft name or Discord member's whitelist.
+// Only covers whitelisting done through applications; console whitelists are not visible here.
+export function whitelistReport(store, query) {
+  const q = String(query || '').trim().replace(/^<@!?(\d+)>$/, '$1').replace(/^[.*]/, '');
+  if (!q) throw new Error('Type a Minecraft username or Discord user ID.');
+  const apps = store.all('SELECT * FROM applications WHERE username=? COLLATE NOCASE OR user_id=? ORDER BY created DESC,rowid DESC LIMIT 5', q, q);
+  if (!apps.length) return `No application found for **${q}**. If they were added with a console command, check in game with \`whitelist list\` (Bedrock: \`fwhitelist\`).`;
+  return apps.map(app => {
+    const job = store.one("SELECT state,error FROM jobs WHERE kind='whitelist' AND json_extract(payload,'$.applicationId')=? ORDER BY rowid DESC LIMIT 1", app.id);
+    const status = {
+      ready: '✅ Whitelisted — the server confirmed it.',
+      approved: job?.state === 'failed' ? '❌ Whitelist failed: ' + (job.error || 'unknown error') + ' (sent back to staff review).' : '⏳ Approved — waiting for the Minecraft server to whitelist them (it runs when the server is online).',
+      pending: store.get('whitelistFailure:' + app.id) ? '🔁 Back in staff review after a failed whitelist: ' + store.get('whitelistFailure:' + app.id) : '📝 Waiting for staff review — not whitelisted yet.',
+      rejected: '🚫 Rejected: ' + (app.reason || 'no reason'),
+      superseded: '↪️ Replaced by a newer application.',
+      cancelled: '👋 Left the Discord — removed from the whitelist.'
+    }[app.state] || app.state;
+    return `**${app.username}** (${app.edition}) · Discord: <@${app.user_id}> · applied <t:${Math.floor(app.created / 1000)}:R>\n${status}`;
+  }).join('\n\n');
+}

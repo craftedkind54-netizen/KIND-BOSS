@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/store.js';
-import { submit, decide, lookupMinecraftAccount, returnFailedWhitelistsToReview } from '../src/applications.js';
+import { submit, decide, lookupMinecraftAccount, returnFailedWhitelistsToReview, whitelistReport } from '../src/applications.js';
 
 const form = (username, edition = 'java') => ({ edition, username, age: '18', rules: 'yes', heard: '', why: 'Build', youtube: '' });
 
@@ -35,4 +35,19 @@ test('Approved applications still waiting for the server are left alone', () => 
   decide(s, id, 'staff', true);
   assert.equal(returnFailedWhitelistsToReview(s), 0);
   assert.equal(s.one('SELECT state FROM applications WHERE id=?', id).state, 'approved');
+});
+
+test('Whitelist check reports each state by Minecraft name or Discord ID', () => {
+  const s = new Store(':memory:');
+  assert.match(whitelistReport(s, 'Ghost'), /No application found/);
+  const id = submit(s, '123456789012345678', form('Steve_1'), 0);
+  assert.match(whitelistReport(s, 'steve_1'), /Waiting for staff review/);
+  decide(s, id, 'staff', true);
+  assert.match(whitelistReport(s, '<@123456789012345678>'), /waiting for the Minecraft server/);
+  s.run("UPDATE jobs SET state='failed',error='Java Minecraft account not found'");
+  assert.match(whitelistReport(s, 'Steve_1'), /Whitelist failed: Java Minecraft account not found/);
+  s.run("UPDATE applications SET state='ready'");
+  assert.match(whitelistReport(s, 'Steve_1'), /✅ Whitelisted/);
+  const b = submit(s, 'u9', form('Cool Tag', 'bedrock'), 0);
+  assert.match(whitelistReport(s, '.Cool Tag'), /Cool Tag\*\* \(bedrock\)/); assert.ok(b);
 });

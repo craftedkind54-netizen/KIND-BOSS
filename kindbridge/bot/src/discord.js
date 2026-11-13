@@ -1,7 +1,7 @@
 import { Client, GatewayIntentBits, MessageFlags, PermissionFlagsBits, SlashCommandBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, LabelBuilder, CheckboxGroupBuilder,
   EmbedBuilder, AttachmentBuilder } from 'discord.js';
-import { submit, decide, joining, returnFailedWhitelistsToReview } from './applications.js';
+import { submit, decide, joining, returnFailedWhitelistsToReview, whitelistReport } from './applications.js';
 import { quotaDay, channelTarget } from './youtube.js';
 import { createNotifications } from './notifications.js';
 import { isOwnedApplicationPanel } from './applicationPanelPolicy.js';
@@ -244,7 +244,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
     userLocks.add(i.user.id);
     try {
       const id = i.customId || i.commandName;
-      if (['setup','health','retry','unlink-youtube','link-youtube','resend-welcome'].includes(id) || /^(approve|reject|rejection|bounty-approve|bounty-reject|bounty-rejection):/.test(id)) {
+      if (['setup','health','wlcheck-form','retry','unlink-youtube','link-youtube','resend-welcome'].includes(id) || /^(approve|reject|rejection|bounty-approve|bounty-reject|bounty-rejection):/.test(id)) {
         // Button-to-modal responses must be immediate; the staff check still uses a fresh REST fetch.
         if (!id.startsWith('reject:') && !id.startsWith('bounty-reject:')) await i.deferReply({ flags: ephemeral });
         await staff(i);
@@ -255,6 +255,9 @@ export function createDiscord(store, c, yt, sharedClient = null) {
           const role = await guild.roles.fetch(roleId);
           if (!role || role.managed || me.roles.highest.comparePositionTo(role) <= 0 || !me.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('Move the bot role above SMP Member and YouTuber, and give it Manage Roles.');
         }
+        const checkBody = {content:'**Whitelist check (staff)**\nClick below and type a Bedrock or Java username, or a Discord user ID, to see if they were whitelisted.',components:[row(button('wlcheck','Check a player'))]};
+        let checkId = store.get('whitelistCheckPanel');
+        try { if (!checkId) throw 0; const ch = await client.channels.fetch(c.log); const m = await ch.messages.fetch(checkId); await m.edit(checkBody); } catch { checkId = (await send(c.log, checkBody)).id; store.set('whitelistCheckPanel', checkId); }
         const body = applicationPanelBody(c);
         const panelId = store.get('applicationPanel');
         if (panelId) { try { const ch = await client.channels.fetch(c.apply); const m = await ch.messages.fetch(panelId); if (isOwnedApplicationPanel(m, client.user.id)) { await m.edit(body); return reply('Application panel updated.'); } } catch { /* Recreate a deleted panel. */ } }
@@ -387,6 +390,8 @@ export function createDiscord(store, c, yt, sharedClient = null) {
         if (Date.now() - last < 5000) throw new Error('Wait a few seconds before another request.'); starts.set(i.user.id,Date.now());
         await yt.submitVideo(i.user.id,i.options.getString('url',true),id === 'short'); return reply('Checked your linked channel and queued any eligible announcement. Duplicate posts are suppressed.');
       }
+      if (id === 'wlcheck') return i.showModal(form('wlcheck-form', 'Whitelist check', [['player','Minecraft username or Discord user ID',100,false]]));
+      if (id === 'wlcheck-form') return reply(whitelistReport(store, i.fields.getTextInputValue('player')).slice(0, 1900));
       if (id === 'health') {
         const seen = store.get('bridgeSeen',0), jobs = store.all("SELECT id,kind,state,attempts,error FROM jobs WHERE state NOT IN ('done','cancelled') ORDER BY rowid DESC LIMIT 10");
         return reply(`Minecraft last connected: ${seen ? `<t:${Math.floor(seen/1000)}:R>` : 'never'}\nServer addresses: Java ${c.java ? 'configured' : 'MISSING JAVA_ADDRESS'}, Bedrock ${c.bedrock ? 'configured' : 'MISSING BEDROCK_ADDRESS'}\nLast DM error: ${store.get('dmError','none')}\nYouTube units today: ${store.one('SELECT used FROM quota WHERE day=?',quotaDay())?.used || 0}/${c.dailyBudget}\nCreators: ${store.one('SELECT count(*) AS n FROM creators').n}/${c.maxCreators}\nLast Discord error: ${store.get('discordError','none')}\nLast YouTube error: ${store.get('youtubeError','none')}\nRecent unfinished jobs:\n${jobs.map(j=>`${j.id} · ${j.kind} · ${j.state} · attempts ${j.attempts}${j.error ? ' · '+j.error : ''}`).join('\n') || 'none'}`.slice(0,1950));

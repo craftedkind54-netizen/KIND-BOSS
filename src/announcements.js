@@ -17,6 +17,8 @@ const {
   TextInputStyle,
   FileUploadBuilder,
   LabelBuilder,
+  RadioGroupBuilder,
+  RadioGroupOptionBuilder,
   AttachmentBuilder,
   Events,
   PermissionsBitField,
@@ -536,20 +538,30 @@ function announcementModal(draft) {
         .setRequired(false)
     );
 
-  const ping = new TextInputBuilder()
-    .setCustomId('announcement_ping')
-    .setLabel(isFlash ? 'Ping EVERYONE or ROLE?' : 'Ping @everyone? YES or NO')
-    .setPlaceholder(isFlash ? 'ROLE = Flash users | EVERYONE = everyone' : 'YES or NO')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setValue(isFlash ? (draft.announcement.pingEveryone ? 'EVERYONE' : 'ROLE') : (draft.announcement.pingEveryone ? 'YES' : 'NO'));
+  const everyone = draft.announcement.pingEveryone === true;
+  const pingOptions = isFlash
+    ? [
+        new RadioGroupOptionBuilder().setLabel('Flash role').setDescription('Ping only the Flash role').setValue('ROLE').setDefault(!everyone),
+        new RadioGroupOptionBuilder().setLabel('@everyone').setDescription('Ping everyone in the server').setValue('EVERYONE').setDefault(everyone),
+      ]
+    : [
+        new RadioGroupOptionBuilder().setLabel('No ping').setValue('NO').setDefault(!everyone),
+        new RadioGroupOptionBuilder().setLabel('@everyone').setDescription('Ping everyone in the server').setValue('YES').setDefault(everyone),
+      ];
+  const ping = new LabelBuilder()
+    .setLabel('Who should be pinged?')
+    .setRadioGroupComponent(
+      new RadioGroupBuilder()
+        .setCustomId('announcement_ping')
+        .setRequired(true)
+        .addOptions(pingOptions)
+    );
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(description),
     new ActionRowBuilder().addComponents(extra)
   );
-  modal.addLabelComponents(upload);
-  modal.addComponents(new ActionRowBuilder().addComponents(ping));
+  modal.addLabelComponents(upload, ping);
 
   return modal;
 }
@@ -1875,7 +1887,7 @@ client.on(Events.InteractionCreate, async interaction => {
         interaction.guild
       );
 
-      const pingInput = interaction.fields.getTextInputValue('announcement_ping').trim().toUpperCase();
+      const pingInput = String(interaction.fields.getRadioGroup('announcement_ping') || '').toUpperCase();
 
       if (draft.type === 'flash') {
         if (pingInput !== 'ROLE' && pingInput !== 'EVERYONE') {

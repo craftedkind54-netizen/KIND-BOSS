@@ -67,12 +67,12 @@ function applicationPanelBody(c) {
       'Bedrock: `' + (c.bedrock || 'yourkindsmp.bedrock.minekeep.gg') + '`' + (c.bedrockPort ? ' • Port: `' + c.bedrockPort + '`' : ''),
       '',
       '**Good to know**',
-      '• Wrong username or a new account? Use **/apply**. Approved but not whitelisted? Use **/status** and choose Reapply.',
+      '• Wrong username or a new account? Use **/apply**. Approved but can't join? Click **Check my status** below and choose Reapply.',
       '• Rejected? Fix your answers and apply again right away.',
       '• Leaving the Discord removes you from the whitelist automatically.',
       '• Trouble getting in? DM **KindCrafted**.'
     ].join('\n'),
-    components: [row(button('edition:java','Apply · Java'), button('edition:bedrock','Apply · Bedrock'))]
+    components: [row(button('edition:java','Apply · Java'), button('edition:bedrock','Apply · Bedrock'), button('status','Check my status', ButtonStyle.Secondary))]
   };
 }
 function bountyContent(row, c, state = row.state, result = {}) {
@@ -114,6 +114,7 @@ function bountyContent(row, c, state = row.state, result = {}) {
 }
 
 const reapplyButtons = () => row(button('reapply:java','Reapply · Java'), button('reapply:bedrock','Reapply · Bedrock'));
+const statusButton = () => row(button('status','Check my status', ButtonStyle.Secondary));
 // Only used to finish drafts opened before the single-form update.
 const youtubeForm = () => form('application:youtube', 'Kind SMP application · 2 of 2', [['youtube', 'YouTube channel link (optional)', 200, false, false]]);
 
@@ -233,6 +234,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
   client.on('interactionCreate', async i => {
     if (!i.isChatInputCommand() && !i.isButton() && !i.isModalSubmit()) return;
     const reply = content => i.deferred || i.replied ? i.editReply({ content, components: [] }) : i.reply({ content, flags: ephemeral });
+    const replyWithStatus = content => i.deferred || i.replied ? i.editReply({ content, components: [statusButton()] }) : i.reply({ content, components: [statusButton()], flags: ephemeral });
     if (i.guildId !== c.guild) return reply('Use this in the Kind SMP Discord server.');
     if (userLocks.has(i.user.id)) return reply('Your previous request is still processing.');
     userLocks.add(i.user.id);
@@ -256,12 +258,12 @@ export function createDiscord(store, c, yt, sharedClient = null) {
       }
       if (id === 'apply') {
         const current = store.one("SELECT * FROM applications WHERE user_id=? AND state IN ('pending','approved') ORDER BY created DESC,rowid DESC LIMIT 1", i.user.id);
-        if (current?.state === 'pending') throw new Error('Your application is waiting for staff review. Use /status for its current status.');
+        if (current?.state === 'pending') throw new Error('Your application is waiting for staff review. Click **Check my status** on the application panel for its current status.');
         if (current?.state === 'approved') return i.reply({content:`Your ${current.edition} account **${current.username}** is approved, but whitelist confirmation is still pending. If the name needs correcting or you still cannot join, choose the edition to submit a corrected application. Staff approval is required again, and the old pending whitelist request will be cancelled when you submit.`,components:[reapplyButtons()],flags:ephemeral});
         return i.reply({ content: `Read <#${c.rules}> before applying. Submitting your application confirms you agree to follow the SMP rules. Already a member with a new account? Apply again here. Your current membership stays active during review. Existing YouTube links are retained; ask staff to change your channel. Choose the account you will join with:`, components: [row(button('edition:java','Java'),button('edition:bedrock','Bedrock'))], flags: ephemeral });
       }
       if (id.startsWith('edition:')) {
-        if (store.one("SELECT id FROM applications WHERE user_id=? AND state IN ('pending','approved')", i.user.id)) throw new Error('You already have an application awaiting review or whitelisting. Use /status.');
+        if (store.one("SELECT id FROM applications WHERE user_id=? AND state IN ('pending','approved')", i.user.id)) throw new Error('You already have an application awaiting review or whitelisting. Click **Check my status** on the application panel.');
         const edition = id.split(':')[1]; if (!['java','bedrock'].includes(edition)) return;
         return i.showModal(applicationForm(edition));
       }
@@ -274,13 +276,13 @@ export function createDiscord(store, c, yt, sharedClient = null) {
         const data = applicationAnswers(i, id.split(':')[1]);
         const appId = submit(store, i.user.id, data, c.cooldown);
         store.run('DELETE FROM drafts WHERE user_id=?', i.user.id);
-        return reply(`Application submitted to staff. Reference: ${appId.slice(0,8)}. Use /status for updates.`);
+        return replyWithStatus(`Application submitted to staff. Reference: ${appId.slice(0,8)}. Click **Check my status** below any time for updates.`);
       }
       if (['application-reapply:java','application-reapply:bedrock'].includes(id)) {
         const data = applicationAnswers(i, id.split(':')[1]);
         const appId = submit(store, i.user.id, data, c.cooldown, Date.now(), {reapplyApproved:true});
         store.run('DELETE FROM drafts WHERE user_id=?', i.user.id);
-        return reply(`Corrected ${data.edition} application submitted to staff. Reference: ${appId.slice(0,8)}. The previous pending whitelist request was cancelled. Use /status for updates.`);
+        return replyWithStatus(`Corrected ${data.edition} application submitted to staff. Reference: ${appId.slice(0,8)}. The previous pending whitelist request was cancelled. Click **Check my status** below any time for updates.`);
       }
       // Honor forms and drafts already open when the bot was upgraded.
       if (['application:java','application:bedrock'].includes(id)) {
@@ -298,7 +300,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
         const data = JSON.parse(draft.data); data.youtube = i.fields.getTextInputValue('youtube').trim();
         const appId = submit(store, i.user.id, data, c.cooldown);
         store.run('DELETE FROM drafts WHERE user_id=?', i.user.id);
-        return reply(`Application submitted to staff. Reference: ${appId.slice(0,8)}. Use /status for updates.`);
+        return replyWithStatus(`Application submitted to staff. Reference: ${appId.slice(0,8)}. Click **Check my status** below any time for updates.`);
       }
       if (id.startsWith('approve:')) {
         const applicationId = id.slice(8);

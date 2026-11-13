@@ -85,7 +85,7 @@ export function whitelistReport(store, query) {
   return apps.map(app => {
     const job = store.one("SELECT state,error FROM jobs WHERE kind='whitelist' AND json_extract(payload,'$.applicationId')=? ORDER BY rowid DESC LIMIT 1", app.id);
     const status = {
-      ready: '✅ Whitelisted — the server confirmed it.',
+      ready: '✅ Whitelisted — the server confirmed it' + (app.uuid ? ' (UUID `' + app.uuid + '`)' : '') + '.' + (store.get('whitelistRedo:' + app.id) ? ' Re-sent <t:' + Math.floor(store.get('whitelistRedo:' + app.id).at / 1000) + ':R>.' : ''),
       approved: job?.state === 'failed' ? '❌ Whitelist failed: ' + (job.error || 'unknown error') + ' (sent back to staff review).' : '⏳ Approved — waiting for the Minecraft server to whitelist them (it runs when the server is online).',
       pending: store.get('whitelistFailure:' + app.id) ? '🔁 Back in staff review after a failed whitelist: ' + store.get('whitelistFailure:' + app.id) : '📝 Waiting for staff review — not whitelisted yet.',
       rejected: '🚫 Rejected: ' + (app.reason || 'no reason'),
@@ -94,4 +94,16 @@ export function whitelistReport(store, query) {
     }[app.state] || app.state;
     return `**${app.username}** (${app.edition}) · Discord: <@${app.user_id}> · applied <t:${Math.floor(app.created / 1000)}:R>\n${status}`;
   }).join('\n\n');
+}
+export function findApplications(store, query) {
+  const q = String(query || '').trim().replace(/^<@!?(\d+)>$/, '$1').replace(/^[.*]/, '');
+  return store.all('SELECT * FROM applications WHERE username=? COLLATE NOCASE OR user_id=? ORDER BY created DESC,rowid DESC LIMIT 5', q, q);
+}
+// Staff button: send the whitelist command to the server again for an accepted member.
+export function whitelistAgain(store, applicationId, now = Date.now()) {
+  const app = store.one("SELECT * FROM applications WHERE id=? AND state IN ('approved','ready')", applicationId);
+  if (!app) throw new Error('Only approved or whitelisted applications can be whitelisted again.');
+  if (store.one("SELECT 1 FROM jobs WHERE kind='whitelist' AND state IN ('queued','leased') AND json_extract(payload,'$.applicationId')=?", app.id)) return app;
+  store.queue(`whitelist:${app.id}:again:${now}`, 'whitelist', { applicationId: app.id, edition: app.edition, username: app.username, redo: app.state === 'ready' });
+  return app;
 }

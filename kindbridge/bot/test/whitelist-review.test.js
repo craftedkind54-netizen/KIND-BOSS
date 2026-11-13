@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/store.js';
-import { submit, decide, lookupMinecraftAccount, returnFailedWhitelistsToReview, whitelistReport } from '../src/applications.js';
+import { submit, decide, lookupMinecraftAccount, returnFailedWhitelistsToReview, whitelistReport, whitelistAgain } from '../src/applications.js';
 
 const form = (username, edition = 'java') => ({ edition, username, age: '18', rules: 'yes', heard: '', why: 'Build', youtube: '' });
 
@@ -50,4 +50,19 @@ test('Whitelist check reports each state by Minecraft name or Discord ID', () =>
   assert.match(whitelistReport(s, 'Steve_1'), /✅ Whitelisted/);
   const b = submit(s, 'u9', form('Cool Tag', 'bedrock'), 0);
   assert.match(whitelistReport(s, '.Cool Tag'), /Cool Tag\*\* \(bedrock\)/); assert.ok(b);
+});
+
+test('Whitelist again re-sends the job for an accepted member without changing their application', () => {
+  const s = new Store(':memory:');
+  const id = submit(s, 'u5', form('Again Tag', 'bedrock'), 0);
+  assert.throws(() => whitelistAgain(s, id), /Only approved or whitelisted/);
+  decide(s, id, 'staff', true);
+  let job = s.lease(); assert.ok(s.ack(job.id, job.lease, true, { uuid: '00000000-0000-0000-0009-01aaaaaaaaaa' }));
+  assert.equal(s.one('SELECT state FROM applications WHERE id=?', id).state, 'ready');
+  whitelistAgain(s, id, 5000); whitelistAgain(s, id, 6000);
+  assert.equal(s.one("SELECT count(*) n FROM jobs WHERE state='queued'").n, 1);
+  job = s.lease(); assert.equal((typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload).redo, true);
+  assert.ok(s.ack(job.id, job.lease, true, { uuid: '00000000-0000-0000-0009-01aaaaaaaaaa' }, '', 7000));
+  assert.equal(s.one('SELECT state FROM applications WHERE id=?', id).state, 'ready');
+  assert.match(whitelistReport(s, 'Again Tag'), /Re-sent/);
 });

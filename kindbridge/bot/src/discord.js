@@ -1,7 +1,7 @@
 import { Client, GatewayIntentBits, MessageFlags, PermissionFlagsBits, SlashCommandBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, LabelBuilder, CheckboxGroupBuilder,
   EmbedBuilder, AttachmentBuilder } from 'discord.js';
-import { submit, decide, joining, returnFailedWhitelistsToReview, whitelistReport } from './applications.js';
+import { submit, decide, joining, returnFailedWhitelistsToReview, whitelistReport, findApplications, whitelistAgain } from './applications.js';
 import { quotaDay, channelTarget } from './youtube.js';
 import { createNotifications } from './notifications.js';
 import { isOwnedApplicationPanel } from './applicationPanelPolicy.js';
@@ -244,7 +244,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
     userLocks.add(i.user.id);
     try {
       const id = i.customId || i.commandName;
-      if (['setup','health','wlcheck-form','retry','unlink-youtube','link-youtube','resend-welcome'].includes(id) || /^(approve|reject|rejection|bounty-approve|bounty-reject|bounty-rejection):/.test(id)) {
+      if (['setup','health','wlcheck-form','retry','unlink-youtube','link-youtube','resend-welcome'].includes(id) || /^(approve|reject|rejection|wlagain|bounty-approve|bounty-reject|bounty-rejection):/.test(id)) {
         // Button-to-modal responses must be immediate; the staff check still uses a fresh REST fetch.
         if (!id.startsWith('reject:') && !id.startsWith('bounty-reject:')) await i.deferReply({ flags: ephemeral });
         await staff(i);
@@ -391,7 +391,15 @@ export function createDiscord(store, c, yt, sharedClient = null) {
         await yt.submitVideo(i.user.id,i.options.getString('url',true),id === 'short'); return reply('Checked your linked channel and queued any eligible announcement. Duplicate posts are suppressed.');
       }
       if (id === 'wlcheck') return i.showModal(form('wlcheck-form', 'Whitelist check', [['player','Minecraft username or Discord user ID',100,false]]));
-      if (id === 'wlcheck-form') return reply(whitelistReport(store, i.fields.getTextInputValue('player')).slice(0, 1900));
+      if (id === 'wlcheck-form') {
+        const query = i.fields.getTextInputValue('player');
+        const again = findApplications(store, query).filter(a => ['approved','ready'].includes(a.state)).slice(0, 5).map(a => button('wlagain:' + a.id, 'Whitelist ' + a.username.slice(0, 60) + ' again', ButtonStyle.Success));
+        return i.editReply({ content: whitelistReport(store, query).slice(0, 1900), components: again.length ? [row(...again)] : [] });
+      }
+      if (id.startsWith('wlagain:')) {
+        const app = whitelistAgain(store, id.slice(8));
+        return reply('Whitelist command for **' + app.username + '** (' + app.edition + ') sent to the Minecraft server. It runs within a minute while the server is online, or when it next starts. Use Check a player again to see the result.');
+      }
       if (id === 'health') {
         const seen = store.get('bridgeSeen',0), jobs = store.all("SELECT id,kind,state,attempts,error FROM jobs WHERE state NOT IN ('done','cancelled') ORDER BY rowid DESC LIMIT 10");
         return reply(`Minecraft last connected: ${seen ? `<t:${Math.floor(seen/1000)}:R>` : 'never'}\nServer addresses: Java ${c.java ? 'configured' : 'MISSING JAVA_ADDRESS'}, Bedrock ${c.bedrock ? 'configured' : 'MISSING BEDROCK_ADDRESS'}\nLast DM error: ${store.get('dmError','none')}\nYouTube units today: ${store.one('SELECT used FROM quota WHERE day=?',quotaDay())?.used || 0}/${c.dailyBudget}\nCreators: ${store.one('SELECT count(*) AS n FROM creators').n}/${c.maxCreators}\nLast Discord error: ${store.get('discordError','none')}\nLast YouTube error: ${store.get('youtubeError','none')}\nRecent unfinished jobs:\n${jobs.map(j=>`${j.id} · ${j.kind} · ${j.state} · attempts ${j.attempts}${j.error ? ' · '+j.error : ''}`).join('\n') || 'none'}`.slice(0,1950));

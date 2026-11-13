@@ -94,6 +94,8 @@ export class Store {
       if (success && r.kind === 'whitelist') {
         const payload = JSON.parse(r.payload);
         if (!/^[0-9a-f-]{36}$/i.test(result.uuid || '')) throw new Error('Missing resolved player UUID');
+        // Staff "whitelist again" on an already accepted member: the server re-added them; nothing else changes.
+        if (payload.redo) { this.set('whitelistRedo:' + payload.applicationId, {uuid: result.uuid, at: now}); return true; }
         const existing = this.one("SELECT id FROM applications WHERE uuid=? AND id<>? AND state IN ('approved','ready')", result.uuid, payload.applicationId);
         if (existing) throw new Error('This Minecraft account is already assigned to another member');
         const app = this.one("SELECT * FROM applications WHERE id=? AND state='approved'", payload.applicationId);

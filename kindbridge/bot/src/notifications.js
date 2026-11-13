@@ -35,9 +35,10 @@ export function createNotifications(store, c, client) {
       return {status:blocked ? 'blocked' : 'failed'};
     } finally { sending.delete(app.id); }
   }
+  // Approved applicants get one DM, sent only after the server confirms the whitelist (state 'ready').
   async function maintenance(now = Date.now()) {
     let attempted = 0;
-    for (const app of store.all("SELECT * FROM applications WHERE state='approved' OR (state IN ('ready','rejected') AND dm_done<>1) ORDER BY created, rowid")) {
+    for (const app of store.all("SELECT * FROM applications WHERE state IN ('ready','rejected') AND dm_done<>1 ORDER BY created, rowid")) {
       const prior = store.get(keyFor(app), {});
       if (prior.sent || prior.nextTry > now) continue;
       const result = await deliver(app, false, now);

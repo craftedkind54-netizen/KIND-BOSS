@@ -1,7 +1,7 @@
 import { Client, GatewayIntentBits, MessageFlags, PermissionFlagsBits, SlashCommandBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, LabelBuilder, CheckboxGroupBuilder,
   EmbedBuilder, AttachmentBuilder } from 'discord.js';
-import { submit, decide, joining } from './applications.js';
+import { submit, decide, joining, returnFailedWhitelistsToReview } from './applications.js';
 import { quotaDay, channelTarget } from './youtube.js';
 import { createNotifications } from './notifications.js';
 import { isOwnedApplicationPanel } from './applicationPanelPolicy.js';
@@ -121,6 +121,10 @@ const youtubeForm = () => form('application:youtube', 'Kind SMP application · 2
 export function createDiscord(store, c, yt, sharedClient = null) {
   const client = sharedClient || new Client({ intents: [GatewayIntentBits.Guilds], allowedMentions: { parse: [] } });
   const notifications = createNotifications(store, c, client);
+  async function checkName(data) {
+    if (!c.accountLookup) return;
+    if (await c.accountLookup(data.edition, String(data.username || '').trim()) === 'missing') throw new Error('No Java Minecraft account is called **' + String(data.username).trim() + '**. Check the spelling (it must match your Java username exactly) and submit again.');
+  }
   async function staff(i) {
     if (i.guildId !== c.guild) throw new Error('Use this command in the Kind SMP Discord server.');
     const member = await i.guild.members.fetch({ user: i.user.id, force: true });
@@ -274,12 +278,14 @@ export function createDiscord(store, c, yt, sharedClient = null) {
       }
       if (['application-single:java','application-single:bedrock'].includes(id)) {
         const data = applicationAnswers(i, id.split(':')[1]);
+        await checkName(data);
         const appId = submit(store, i.user.id, data, c.cooldown);
         store.run('DELETE FROM drafts WHERE user_id=?', i.user.id);
         return replyWithStatus(`Application submitted to staff. Reference: ${appId.slice(0,8)}. Click **Check my status** below any time for updates.`);
       }
       if (['application-reapply:java','application-reapply:bedrock'].includes(id)) {
         const data = applicationAnswers(i, id.split(':')[1]);
+        await checkName(data);
         const appId = submit(store, i.user.id, data, c.cooldown, Date.now(), {reapplyApproved:true});
         store.run('DELETE FROM drafts WHERE user_id=?', i.user.id);
         return replyWithStatus(`Corrected ${data.edition} application submitted to staff. Reference: ${appId.slice(0,8)}. The previous pending whitelist request was cancelled. Click **Check my status** below any time for updates.`);
@@ -298,6 +304,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
         const draft = store.one('SELECT * FROM drafts WHERE user_id=?', i.user.id);
         if (!draft || draft.expires < Date.now()) throw new Error('Your draft expired. Start again with /apply.');
         const data = JSON.parse(draft.data); data.youtube = i.fields.getTextInputValue('youtube').trim();
+        await checkName(data);
         const appId = submit(store, i.user.id, data, c.cooldown);
         store.run('DELETE FROM drafts WHERE user_id=?', i.user.id);
         return replyWithStatus(`Application submitted to staff. Reference: ${appId.slice(0,8)}. Click **Check my status** below any time for updates.`);
@@ -424,6 +431,7 @@ export function createDiscord(store, c, yt, sharedClient = null) {
     const guild = await safely('fetch server', () => client.guilds.fetch(c.guild));
     if (!guild) return;
 
+    await safely('return failed whitelists to review', () => returnFailedWhitelistsToReview(store));
     await safely('create application log messages', async () => {
       const apps = store.all('SELECT * FROM applications WHERE log_id IS NULL LIMIT 10');
       await processRows('create application log', apps, async app => {
@@ -431,6 +439,8 @@ export function createDiscord(store, c, yt, sharedClient = null) {
         const embed = new EmbedBuilder().setColor(0x65b891).setTitle(`Kind SMP application · ${app.id.slice(0,8)}`)
           .setDescription(`Applicant: <@${app.user_id}>\nEdition: ${app.edition}`)
           .addFields({name:'Minecraft username',value:app.username},{name:'Age',value:a.age},{name:'Agrees to rules',value:a.rules === 'yes' ? '✅ Agreed to all SMP rules' : a.rules},...(a.heard ? [{name:'How they heard about us',value:a.heard}] : []),{name:'Why they want to join',value:a.why},{name:'YouTube channel (optional)',value:a.youtube || 'Not provided'});
+        const failure = store.get('whitelistFailure:' + app.id);
+        if (failure) embed.addFields({name:'⚠️ Previous whitelist attempt failed', value: failure + '\nApproving queues the whitelist again. Check the username first; reject with a reason if it is wrong.'});
         if (a.previousAccount) embed.addFields({name:'Account change', value: a.previousAccount.edition + ': ' + a.previousAccount.username + ' → ' + app.edition + ': ' + app.username + '. Current membership stays active until whitelisting succeeds. Staff must remove the old whitelist entry if needed. Existing YouTube links are retained.'});
         const msg = await send(c.log,{embeds:[embed],components:[row(button(`approve:${app.id}`,'Approve',ButtonStyle.Success),button(`reject:${app.id}`,'Reject with reason',ButtonStyle.Danger))]},`application:${app.id}`);
         store.run('UPDATE applications SET log_id=? WHERE id=?',msg.id,app.id);

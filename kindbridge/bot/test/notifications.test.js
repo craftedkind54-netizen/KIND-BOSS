@@ -19,13 +19,12 @@ test('Welcome DM has the requested concise format',t=>{
   const f=fixture(t);
   assert.equal(joining(f.c),'Welcome to Kind SMP! Your application is approved and your Minecraft account is whitelisted.\nJava: smp.example.test\nBedrock: bedrock.example.test • Port: 19132\nRules: <#'+f.c.rules+'>');
 });
-test('Approval sends a private address DM; whitelisting sends one final welcome',async t=>{
+test('Approval sends no DM; whitelisting sends one welcome',async t=>{
   const f=fixture(t); await f.n.maintenance();assert.equal(f.sent.length,0);
-  f.approve();await f.n.maintenance();await f.n.maintenance();assert.equal(f.sent.length,1);
-  assert.match(f.sent[0].content,/whitelisting is still pending/);assert.match(f.sent[0].content,/Java: smp.example.test/);
-  assert.equal(f.app().dm_done,0);f.ready();await f.n.maintenance();await f.n.maintenance();
-  assert.equal(f.sent.length,2);assert.equal(f.sent[1].content,joining(f.c));assert.equal(f.app().dm_done,1);
-  assert.deepEqual(f.sent[1].allowedMentions,{parse:[]});
+  f.approve();await f.n.maintenance();await f.n.maintenance();assert.equal(f.sent.length,0);
+  f.ready();await f.n.maintenance();await f.n.maintenance();
+  assert.equal(f.sent.length,1);assert.equal(f.sent[0].content,joining(f.c));assert.equal(f.app().dm_done,1);
+  assert.deepEqual(f.sent[0].allowedMentions,{parse:[]});
 });
 test('Blocked DMs retry after backoff, including legacy dm_done=2',async t=>{
   const f=fixture(t);f.approve();f.ready();f.s.run('UPDATE applications SET dm_done=2 WHERE id=?',f.id);
@@ -44,8 +43,8 @@ test('Resend can deliver an already sent DM and rejects pending applications',as
   f.approve();f.ready();await f.n.maintenance();await f.n.deliver(f.app(),true);assert.equal(f.sent.length,2);
 });
 test('A failed recipient does not prevent delivery to another recipient',async t=>{
-  const f=fixture(t);f.approve();
-  const second=submit(f.s,'other',{edition:'java',username:'OtherPlayer',age:'18',rules:'yes',heard:'Friend',why:'Build',youtube:''},0);decide(f.s,second,'staff',true);
+  const f=fixture(t);f.approve();f.ready();
+  const second=submit(f.s,'other',{edition:'java',username:'OtherPlayer',age:'18',rules:'yes',heard:'Friend',why:'Build',youtube:''},0);decide(f.s,second,'staff',true);f.s.run("UPDATE applications SET state='ready' WHERE id=?",second);
   f.client.users.fetch=async id=>({send:async body=>{if(id==='member')throw {code:50007};f.sent.push(body);}});
   await f.n.maintenance();assert.equal(f.sent.length,1);
 });

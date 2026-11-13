@@ -4,10 +4,12 @@ import { Store } from './store.js';
 import { YouTube } from './youtube.js';
 import { createDiscord } from './discord.js';
 import { server } from './server.js';
+import { lookupMinecraftAccount } from './applications.js';
 
 export async function startKindBridge(sharedClient) {
   const c = config();
   validateConfig(c);
+  c.accountLookup = (edition, name) => lookupMinecraftAccount(edition, name);
   const s = new Store(join(c.dataDir, 'kind-smp.db'));
   const yt = new YouTube(s, c);
   const { maintenance } = createDiscord(s, c, yt, sharedClient);

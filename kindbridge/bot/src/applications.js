@@ -52,3 +52,26 @@ export function joining(c, whitelisted = true) {
   lines.push('Rules: <#' + c.rules + '>');
   return lines.join('\n');
 }
+// Checks a Java name with Mojang before the form is accepted. Returns 'found', 'missing' or 'unknown'.
+// Bedrock gamertags cannot be checked in advance: GeyserMC only knows players who joined a Geyser server before.
+export async function lookupMinecraftAccount(edition, name, fetchImpl = fetch) {
+  if (edition !== 'java') return 'unknown';
+  try {
+    const res = await fetchImpl('https://api.mojang.com/users/profiles/minecraft/' + encodeURIComponent(name), { signal: AbortSignal.timeout(2000) });
+    if (res.status === 200) return 'found';
+    if (res.status === 204 || res.status === 404) return 'missing';
+  } catch { /* Network trouble never blocks an application. */ }
+  return 'unknown';
+}
+// Approved applications whose whitelist job failed go back to staff review with the reason.
+export function returnFailedWhitelistsToReview(store) {
+  return store.transaction(() => {
+    const rows = store.all("SELECT a.id, j.error FROM applications a JOIN jobs j ON j.kind='whitelist' AND j.state='failed' AND json_extract(j.payload,'$.applicationId')=a.id WHERE a.state='approved' AND NOT EXISTS (SELECT 1 FROM jobs k WHERE k.kind='whitelist' AND k.state IN ('queued','leased','done') AND json_extract(k.payload,'$.applicationId')=a.id)");
+    for (const r of rows) {
+      store.set('whitelistFailure:' + r.id, String(r.error || 'Unknown error').slice(0, 300));
+      store.run("DELETE FROM jobs WHERE kind='whitelist' AND state='failed' AND json_extract(payload,'$.applicationId')=?", r.id);
+      store.run("UPDATE applications SET state='pending',reviewer=NULL,decided=NULL,log_id=NULL,notification_done=0 WHERE id=? AND state='approved'", r.id);
+    }
+    return rows.length;
+  });
+}

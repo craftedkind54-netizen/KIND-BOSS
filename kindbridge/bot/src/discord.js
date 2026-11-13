@@ -67,7 +67,7 @@ function applicationPanelBody(c) {
       'Bedrock: `' + (c.bedrock || 'yourkindsmp.bedrock.minekeep.gg') + '`' + (c.bedrockPort ? ' • Port: `' + c.bedrockPort + '`' : ''),
       '',
       '**Good to know**',
-      '• Wrong username or a new account? Use **/apply**. Approved but can't join? Click **Check my status** below and choose Reapply.',
+      '• Wrong username or a new account? Use **/apply**. Approved but cannot join? Click **Check my status** below and choose Reapply.',
       '• Rejected? Fix your answers and apply again right away.',
       '• Leaving the Discord removes you from the whitelist automatically.',
       '• Trouble getting in? DM **KindCrafted**.'

@@ -16,6 +16,7 @@ class Builder {
   setLabel(v){assert.ok(v.length<=80);this.data.label=v;return this;}
   setCustomId(v){assert.ok(v.length<=100);this.data.customId=v;return this;}
   setStyle(v){this.data.style=v;return this;}
+  setDisabled(v){this.data.disabled=v;return this;}
   setPlaceholder(v){this.data.placeholder=v;return this;}
   setMinValues(v){this.data.min=v;return this;}
   setMaxValues(v){this.data.max=v;return this;}
@@ -90,11 +91,12 @@ test('welcome, study guide, every category brief and question menu match each ta
       assert.equal(ctx.boardComponents(a,s)[0].components[0].data.label,'▶️ Start Category');
       s.awaitingCategoryBrief=false;s.selected=Array.from({length:cat.pick},(_,k)=>k);
       const board=ctx.boardEmbed(a,s).data.description;
-      const menu=ctx.boardComponents(a,s)[0].components[0].data;
-      assert.equal(menu.min,cat.pick);assert.equal(menu.max,cat.pick);assert.equal(menu.options.length,cat.qs.length);
+      const btns=ctx.boardComponents(a,s).flatMap(r=>r.components.map(c=>c.data)).filter(d=>String(d.customId).startsWith('sa:ask:'));
+      assert.equal(btns.length,cat.qs.length);
       for(const q of cat.qs)assert.ok(board.includes(q));
-      assert.equal(menu.options.filter(x=>x.default).length,cat.pick);
-      assert.equal(ctx.boardComponents(a,s).length,cat.bonus?3:4);
+      assert.equal(btns.filter(b=>b.label.startsWith('✅')).length,cat.pick);
+      assert.ok(btns.every(b=>b.disabled)); // all picked, so nothing more can be asked
+      assert.equal(ctx.boardComponents(a,s).length,cat.bonus?3:3);
       if(cat.bonus){assert.equal(i,n-1);assert.ok(board.includes('Unscored bonus'));for(const prompt of bank.BONUS_PROMPTS)assert.ok(board.includes(prompt));}
     }
   }
@@ -178,16 +180,20 @@ test('every rank has its own scored categories',()=>{
 });
 
 test('screen share shows one selected question at a time with a timer and two repeats',async()=>{
-  const h=harness('general',{started:true,questionBankVersion:bank.VERSION,questionBank:bank.snapshot('general'),category:0,leadInterviewer:'lead',selected:[3,0,2],grades:{},notes:{}});
+  const h=harness('general',{started:true,questionBankVersion:bank.VERSION,questionBank:bank.snapshot('general'),category:0,leadInterviewer:'lead',selected:[],grades:{},notes:{}});
   h.ctx.rank=key=>({label:labels[key]});
   assert.equal(h.ctx.presenterState(h.row()).phase,'waiting');
-  for(let n=0;n<3;n++){
-    await h.run('showQ');
+  for(const [k,n] of [3,0,2].entries()){
+    const r=await h.run('ask',{customId:'sa:ask:42:'+n});
     const st=h.ctx.presenterState(h.row());
-    assert.equal(st.phase,'question');assert.equal(st.number,n+1);assert.equal(st.seconds,60);
-    assert.equal(st.question,bank.categoryFor('general',0).qs[[3,0,2][n]]);
+    assert.equal(st.phase,'question');assert.equal(st.number,k+1);assert.equal(st.seconds,60);
+    assert.equal(st.question,bank.categoryFor('general',0).qs[n]);
+    const btn=r.payload.components.flatMap(x=>x.components.map(c=>c.data)).find(d=>d.customId==='sa:ask:42:'+n);
+    assert.ok(btn.label.startsWith('📺'));assert.equal(btn.disabled,true);
   }
-  assert.ok((await h.run('showQ')).result.includes('All 3 questions'));
+  assert.deepEqual(JSON.parse(h.row().interview_state).selected,[3,0,2]);
+  assert.ok((await h.run('ask',{customId:'sa:ask:42:1'})).result.includes('All 3 questions'));
+  assert.ok((await h.run('ask',{customId:'sa:ask:42:0'})).result.includes('already asked'));
   await h.run('repeatQ');await h.run('repeatQ');
   assert.equal(h.ctx.presenterState(h.row()).repeats,2);
   assert.ok((await h.run('repeatQ')).result.includes('No repeats left'));
@@ -249,13 +255,13 @@ test('Activity page finds the interview by voice channel and hands Discord the a
 
 test('speech shows one prompt with a 5-minute timer and scenarios get 90 seconds',async()=>{
   const qb=bank.snapshot('senior'),sp=qb.findIndex(c=>c.key==='speech'),sc=qb.findIndex(c=>c.key==='scenario');
-  const h=harness('senior',{started:true,questionBankVersion:bank.VERSION,questionBank:qb,category:sp,leadInterviewer:'lead',selected:[0],grades:{},notes:{}});
-  assert.ok(h.ctx.boardEmbed(h.row(),JSON.parse(h.row().interview_state)).data.description.includes('300 seconds'));
-  await h.run('showQ');
+  const h=harness('senior',{started:true,questionBankVersion:bank.VERSION,questionBank:qb,category:sp,leadInterviewer:'lead',selected:[],grades:{},notes:{}});
+  assert.ok(h.ctx.boardEmbed(h.row(),JSON.parse(h.row().interview_state)).data.description.includes('300-second'));
+  await h.run('ask',{customId:'sa:ask:42:0'});
   let st=h.ctx.presenterState(h.row());
   assert.equal(st.seconds,300);assert.equal(st.of,1);assert.equal(st.question,qb[sp].qs[0]);
-  assert.ok((await h.run('showQ')).result.includes('All 1 question has'));
-  const h2=harness('senior',{started:true,questionBankVersion:bank.VERSION,questionBank:qb,category:sc,leadInterviewer:'lead',selected:[0,1,2],grades:{},notes:{}});
-  await h2.run('showQ');
+  assert.ok((await h.run('ask',{customId:'sa:ask:42:2'})).result.includes('All 1 question has'));
+  const h2=harness('senior',{started:true,questionBankVersion:bank.VERSION,questionBank:qb,category:sc,leadInterviewer:'lead',selected:[],grades:{},notes:{}});
+  await h2.run('ask',{customId:'sa:ask:42:1'});
   assert.equal(h2.ctx.presenterState(h2.row()).seconds,90);
 });

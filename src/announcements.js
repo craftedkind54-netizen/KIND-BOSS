@@ -1420,9 +1420,11 @@ async function processSchedules() {
 }
 
 async function showScheduled(interaction) {
+  // Acknowledge within Discord's 3-second window before reading schedules.
+  await interaction.deferReply({ ephemeral: true });
   const schedules = loadSchedules();
   if (schedules.length === 0) {
-    return interaction.reply({ content: '📭 There are no scheduled posts.', ephemeral: true });
+    return interaction.editReply({ content: '📭 There are no scheduled posts.' });
   }
 
   const options = schedules.slice(0, 25).map(item => ({
@@ -1433,14 +1435,13 @@ async function showScheduled(interaction) {
       : 'Unknown time',
   }));
 
-  return interaction.reply({
+  return interaction.editReply({
     content: '**🕒 Scheduled Content**',
     components: [
       new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder().setCustomId('scheduled_select').setPlaceholder('Choose Scheduled Content').addOptions(options)
       ),
     ],
-    ephemeral: true,
   });
 }
 
@@ -1529,10 +1530,11 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isButton() && approvalMatch) return decideAnnouncementApproval(interaction, approvalMatch[1], approvalMatch[2]);
 
     if (interaction.isButton() && interaction.customId === 'create_content') {
-      return interaction.reply({
+      // Acknowledge within Discord's 3-second window before doing any work.
+      await interaction.deferReply({ ephemeral: true });
+      return interaction.editReply({
         content: '**What do you want to create?**',
         components: [contentMenu()],
-        ephemeral: true,
       });
     }
 

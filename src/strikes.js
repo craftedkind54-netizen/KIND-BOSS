@@ -12,6 +12,7 @@ const { buildActiveGoalPanel } = require('./activeGoalPresentation');
 const { strikeStaffRoleIds, canManageStrikes } = require('./strikeStaffAccess');
 const { formatApprovedStrikeNotice } = require('./strikeNotice');
 const { createTeamSync } = require('./teamSync');
+const { isOwnerLevel, findCoOwnerRole } = require('./ownerAccess');
 const {
   Client, GatewayIntentBits, Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags,
@@ -43,6 +44,7 @@ const STRIKE_PLAYER_NOTICE_CHANNEL_ID = process.env.STRIKE_PLAYER_NOTICE_CHANNEL
 const STRIKE_MANAGEMENT_CHANNEL_ID = process.env.STRIKE_MANAGEMENT_CHANNEL_ID || '1555840868693442640';
 let strikeApprovalChannelId = process.env.STRIKE_APPROVAL_CHANNEL_ID || '';
 const OWNER_ROLE_ID = process.env.OWNER_ROLE_ID || '1555827222688829441';
+const CO_OWNER_ROLE_ID = process.env.CO_OWNER_ROLE_ID || '';
 const MINECRAFT_FEED_CHANNEL_ID = process.env.MINECRAFT_FEED_CHANNEL_ID || '1555986926052315208';
 const STAFF_AUDIT_CHANNEL_ID = process.env.STAFF_AUDIT_CHANNEL_ID || '1561291135819714630';
 const ACTIVE_GOAL_PROGRESS_CHANNEL_ID = process.env.ACTIVE_GOAL_PROGRESS_CHANNEL_ID || '1561320960135659520';
@@ -561,8 +563,9 @@ async function ensurePanel(){
   else await m.edit({embeds:[managementEmbed()],components:managementRows()});
   db.prepare(`INSERT INTO app_state(key,value) VALUES('panel_message_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(m.id);
 }
-function allowed(i){return canManageStrikes(i,{guildId:GUILD_ID,roleIds:STAFF_ROLE_IDS});}
-function owner(i){return i.guildId===GUILD_ID && i.member?.roles?.cache?.has(OWNER_ROLE_ID);}
+// Owner and Co-Owner have the same strike powers.
+function owner(i){return i.guildId===GUILD_ID && isOwnerLevel(i.member,{guild:i.guild,userId:i.user?.id,ownerRoleId:OWNER_ROLE_ID,coOwnerRoleId:CO_OWNER_ROLE_ID});}
+function allowed(i){return canManageStrikes(i,{guildId:GUILD_ID,roleIds:STAFF_ROLE_IDS}) || owner(i);}
 const PAGE_SIZE = 25;
 const allPlayers = () => db.prepare(`
   SELECT p.uuid, p.username, COALESCE(s.total, 0) AS total
@@ -676,8 +679,8 @@ client.once(Events.ClientReady, async () => {
 client.on(Events.InteractionCreate, async i=>{
   try{
     if((!i.isButton()&&!i.isModalSubmit())||typeof i.customId!=='string'||!i.customId.startsWith('activegoal:'))return;
-    const isOwner=i.guildId===GUILD_ID&&(i.user.id===i.guild?.ownerId||i.member?.roles?.cache?.has(OWNER_ROLE_ID));
-    if(!isOwner)return i.reply({content:'Only the server owner can set the active player goal.',flags:MessageFlags.Ephemeral});
+    const isOwner=owner(i);
+    if(!isOwner)return i.reply({content:'Only the Owner or Co-Owner can set the active player goal.',flags:MessageFlags.Ephemeral});
     if(i.channelId!==ACTIVE_GOAL_MANAGEMENT_CHANNEL_ID)return i.reply({content:'Use the Active Goal controls in the configured goal management channel.',flags:MessageFlags.Ephemeral});
     if(i.isButton()&&i.customId==='activegoal:set')return i.showModal(activeGoalModal());
     if(i.isModalSubmit()&&i.customId==='activegoal:configure'){
@@ -730,7 +733,10 @@ appealRetryTimer.unref?.();
 async function ensureApprovalChannel() {
   if (strikeApprovalChannelId) {
     const existing = await client.channels.fetch(strikeApprovalChannelId).catch(() => null);
-    if (existing?.isTextBased()) return existing;
+    if (existing?.isTextBased()) {
+      await shareApprovalChannelWithCoOwner(existing);
+      return existing;
+    }
     throw new Error('STRIKE_APPROVAL_CHANNEL_ID does not point to an accessible text channel');
   }
   const guild = await client.guilds.fetch(GUILD_ID);
@@ -752,7 +758,22 @@ async function ensureApprovalChannel() {
   strikeApprovalChannelId = channel.id;
   db.prepare(`INSERT INTO app_state(key,value) VALUES('strike_approval_channel_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(channel.id);
   console.log(`Created private owner-only strike approval channel ${channel.id}`);
+  await shareApprovalChannelWithCoOwner(channel);
   return channel;
+}
+
+// Co-Owner sees and uses #strike-approvals like the Owner. Never throws: a missing role or
+// permission only logs a warning and leaves the channel as it was.
+async function shareApprovalChannelWithCoOwner(channel) {
+  try {
+    const role = await findCoOwnerRole(channel.guild, CO_OWNER_ROLE_ID);
+    if (!role) { console.warn('Co-Owner role not found; #strike-approvals stays owner-only'); return; }
+    if (channel.permissionOverwrites?.cache?.has(role.id)) return;
+    await channel.permissionOverwrites.edit(role.id, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true }, { reason: 'Co-Owner has the same strike approval access as Owner' });
+    console.log(`Gave Co-Owner access to strike approval channel ${channel.id}`);
+  } catch (error) {
+    console.warn('Could not give Co-Owner access to #strike-approvals:', error?.message || error);
+  }
 }
 
 client.on(Events.InteractionCreate, async i => {

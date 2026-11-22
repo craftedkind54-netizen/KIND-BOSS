@@ -3,7 +3,9 @@
   "version": "2.0.0",
   "private": true,
   "main": "index.js",
-  "engines": { "node": ">=24.17.0 <25" },
+  "engines": {
+    "node": ">=24.17.0 <25"
+  },
   "scripts": {
     "start": "node index.js",
     "check": "node --check index.js && node --check src/tickets.js && node --check src/announcements.js && node --check src/strikes.js && node --check src/teamSync.js && node --check src/activePlayerGoal.js && node --check src/staffAudit.js && node --check src/strikeAppealPolicy.js && node --check src/playerDiscordLinks.js && node --check src/strikePolicy.js && node --check src/venting.js && node --check src/staffApplications.js && node --check src/staffMinecraftAccount.js && node --check src/staffRoleResolver.js && node --check src/intros.js && node --check src/interviewQuestions.js && node --check kindbridge/bot/src/main.js && node --check kindbridge/bot/src/discord.js && node --check kindbridge/bot/src/server.js",
@@ -14,7 +16,8 @@
     "discord.js": "14.27.0",
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
+    "fast-xml-parser": "5.11.2",
     "luxon": "^3.6.1",
-    "fast-xml-parser": "5.11.2"
+    "nodemailer": "^7.0.13"
   }
 }

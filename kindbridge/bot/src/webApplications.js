@@ -30,22 +30,31 @@ function validate(b) {
 }
 
 let mailer;
+// Railway Hobby blocks SMTP, so the main path is an HTTPS relay (Google Apps Script on the staff Gmail).
 async function sendEmail(to, subject, text) {
+  const relay = process.env.EMAIL_RELAY_URL;
+  if (relay) {
+    try {
+      const r = await fetch(relay, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ to, subject, text }), redirect: 'follow', signal: AbortSignal.timeout(20000) });
+      const body = (await r.text()).trim();
+      return r.ok && body.startsWith('ok') ? 'sent' : 'failed: relay said ' + body.slice(0, 120);
+    } catch (e) { return 'failed: ' + String(e.message || e).slice(0, 150); }
+  }
   const user = process.env.SMTP_USER, pass = process.env.SMTP_PASS;
-  if (!user || !pass) return 'not configured (set SMTP_USER and SMTP_PASS in Railway)';
+  if (!user || !pass) return 'not configured (set EMAIL_RELAY_URL in Railway)';
   try {
     if (!mailer) {
       const nodemailer = (await import('nodemailer')).default;
       mailer = nodemailer.createTransport({
         host: process.env.SMTP_HOST || 'smtp.gmail.com', port: Number(process.env.SMTP_PORT || 465),
-        secure: Number(process.env.SMTP_PORT || 465) === 465, auth: { user, pass }
+        secure: Number(process.env.SMTP_PORT || 465) === 465, auth: { user, pass },
+        connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 20000
       });
     }
     await mailer.sendMail({ from: process.env.SMTP_FROM || `KindSMP <${user}>`, to, subject, text });
     return 'sent';
   } catch (e) { return 'failed: ' + String(e.message || e).slice(0, 150); }
 }
-
 function approvedText(app, c) {
   const lines = [`Hi ${app.username},`, '', 'Good news: your KindSMP application was approved! Your Minecraft account is being added to the whitelist now (it finishes as soon as the server is online).', ''];
   if (c.java) lines.push('Java address: ' + c.java);
@@ -112,19 +121,23 @@ export function attachWebApplications(http, client, store, c) {
     app.state = ok ? 'approved' : 'rejected'; app.reviewer = i.user.id; app.decided = Date.now(); app.reason = reason || '';
     if (ok) store.queue('whitelist:web:' + app.id, 'whitelist', { applicationId: 'web:' + app.id, edition: app.edition, username: app.username, redo: true });
     store.set('webapp:' + app.id, app);
+    return emailAndUpdate(app);
+  }
+  async function emailAndUpdate(app) {
+    const ok = app.state === 'approved';
     const mail = await sendEmail(app.email, ok ? 'Your KindSMP application was approved!' : 'Your KindSMP application',
-      ok ? approvedText(app, c) : rejectedText(app, reason));
+      ok ? approvedText(app, c) : rejectedText(app, app.reason));
     app.email_status = mail; store.set('webapp:' + app.id, app);
-    const text = (ok ? `✅ Approved by <@${i.user.id}>. Whitelist sent to the server.` : `❌ Rejected by <@${i.user.id}>.` + (reason ? ' Reason: ' + reason : '')) + `\nEmail: ${mail}.`;
+    const text = (ok ? `✅ Approved by <@${app.reviewer}>. Whitelist sent to the server.` : `❌ Rejected by <@${app.reviewer}>.` + (app.reason ? ' Reason: ' + app.reason : '')) + `\nEmail: ${mail}.`;
+    const components = mail === 'sent' ? [] : [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('webemail:' + app.id).setLabel('Resend email').setStyle(ButtonStyle.Secondary))];
     const channel = await client.channels.fetch(c.log);
     const msg = await channel.messages.fetch(app.messageId);
-    await msg.edit({ embeds: [embedFor(app, { ok, text })], components: [] });
+    await msg.edit({ embeds: [embedFor(app, { ok, text })], components });
     return text;
   }
-
   client.on('interactionCreate', async i => {
     const id = i.customId || '';
-    if (!/^web(approve|reject|rejectmodal):/.test(id)) return;
+    if (!/^web(approve|reject|rejectmodal|email):/.test(id)) return;
     try {
       if (i.guildId !== c.guild) return;
       const appId = id.split(':')[1], app = store.get('webapp:' + appId, null);
@@ -136,6 +149,10 @@ export function attachWebApplications(http, client, store, c) {
       await i.deferReply({ flags: 64 });
       if (!(await isStaff(i))) return i.editReply('Only staff can do that.');
       if (!app) return i.editReply('This website application was not found.');
+      if (id.startsWith('webemail:') || (app.state !== 'pending' && app.email_status !== 'sent' && id.startsWith('webapprove:') && app.state === 'approved')) {
+        if (app.state === 'pending') return i.editReply('Not decided yet.');
+        return i.editReply(await emailAndUpdate(app));
+      }
       if (app.state !== 'pending') return i.editReply('Already ' + app.state + '.');
       const reason = id.startsWith('webrejectmodal:') ? clean(i.fields.getTextInputValue('reason'), 500) : '';
       return i.editReply(await finish(i, app, id.startsWith('webapprove:'), reason));

@@ -5,6 +5,7 @@ import { YouTube } from './youtube.js';
 import { createDiscord } from './discord.js';
 import { server } from './server.js';
 import { lookupMinecraftAccount } from './applications.js';
+import { attachWebApplications } from './webApplications.js';
 
 export async function startKindBridge(sharedClient) {
   const c = config();
@@ -14,6 +15,7 @@ export async function startKindBridge(sharedClient) {
   const yt = new YouTube(s, c);
   const { maintenance } = createDiscord(s, c, yt, sharedClient);
   const http = server(s, c, yt, () => sharedClient.isReady());
+  attachWebApplications(http, sharedClient, s, c);
   http.requestTimeout = 20000;
   http.headersTimeout = 10000;
   await new Promise((resolve, reject) => {

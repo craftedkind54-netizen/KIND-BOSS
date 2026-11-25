@@ -62,7 +62,8 @@ test('draws an hourly heatmap as % of goal with viewer-local timestamps', () => 
   assert.match(all, new RegExp(`<t:${1800000000 - 86400 + 18 * 3600}:t>`));
   assert.match(all, /⭐/);
   assert.match(all, /30% of the goal/);
-  assert.match(all, /🟪 🟪/);
+  assert.match(all, /🟨/);
+  assert.match(all, /🇸 🇲 🇹 🇼 🇹 🇫 🇸/);
   assert.match(all, /🟦/);
   assert.match(all, /✅✅▫️✅✅✅⏳/);
   assert.ok(JSON.stringify(panel).length < 6000);

@@ -47,116 +47,78 @@ function hourLabel(hour) {
   return `${String(h).padStart(2, ' ')}${suffix}`;
 }
 
-// Hourly heatmap: one row per hour, one column per weekday (Sun..Sat).
-// Row labels are Discord timestamps, so every viewer sees the hours in their
-// own time zone. dayStart is the unix second of today's server-local midnight.
-// Returns several embed fields (each field value must stay under 1024 chars).
-// With `forecastDay` (a weekday 0-6), the chart forecasts that day from the
-// same weekday last week; dayStart is then that day's local midnight.
-function buildHeatmap(heatmap, target, dayStart, forecastDay = null) {
+// "When players are online" grid: one row per time block, one column per day
+// of the current week (Sun..Sat, with dates on top). Each square is a
+// prediction for this week: last week's average players at that day and time.
+// Row labels are Discord timestamps, so every viewer sees their own time zone.
+// dayStart is the unix second of today's server-local midnight.
+const DAY_LETTERS = ['🇸', '🇲', '🇹', '🇼', '🇹', '🇫', '🇸'];
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function buildHeatmap(heatmap, target, dayStart, todayWeekday = null, timezone = 'UTC') {
   const cells = heatmap?.cells;
   if (!Array.isArray(cells) || !cells.some(row => row.some(value => value != null))) return null;
   const step = heatmap.bucketHours || 1;
   const hours = cells[0].length;
   const label = b => dayStart ? `<t:${dayStart + b * step * 3600}:t>` : `\`${hourLabel(b * step)}\``;
-  // A typical day: average each time block across every day that has data.
+
+  // Average across the week per time block, used to star the busiest times.
   const typical = [];
   for (let b = 0; b < hours; b++) {
     const values = cells.map(row => row[b]).filter(value => value != null);
     typical.push(values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null);
   }
-  const dayRow = forecastDay != null ? cells[forecastDay] : null;
-  const useDay = Array.isArray(dayRow) && dayRow.some(value => value != null);
-  if (useDay) dayRow.forEach((value, b) => { if (value != null) typical[b] = value; });
-  const dayName = useDay ? ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][forecastDay] : null;
   const ranked = typical.map((value, b) => ({ value, b })).filter(item => item.value > 0).sort((a, z) => z.value - a.value);
   const top = new Set(ranked.slice(0, 3).map(item => item.b));
 
-  // Bar first (left-aligned, spaced squares), then the time in the viewer's zone.
-  const WIDTH = 8;
-  const rows = typical.map((value, b) => {
-    const filled = value > 0 ? Math.max(1, Math.min(WIDTH, Math.round(value / target * WIDTH))) : 0;
-    const bar = [...Array(filled).fill(heatLevel(value, target)), ...Array(WIDTH - filled).fill('▫️')].join(' ');
-    const avg = value > 0 ? ` · ${value.toFixed(1)}` : '';
-    return `${bar}   ${label(b)}${avg}${top.has(b) ? ' ⭐' : ''}`;
+  // Header: day letters (separated by spaces so they never merge into flags),
+  // and the dates of this week's Sunday..Saturday.
+  const header = `${DAY_LETTERS.join(' ')}`;
+  let dates = '';
+  if (dayStart && Number.isInteger(todayWeekday)) {
+    const fmt = new Intl.DateTimeFormat('en-US', { timeZone: timezone, month: 'numeric', day: 'numeric' });
+    const weekStart = dayStart - todayWeekday * 86400;
+    const day = d => fmt.format(new Date((weekStart + d * 86400 + 43200) * 1000));
+    dates = `-# This week: ${DAY_NAMES.map((name, d) => d === todayWeekday ? `**${name} ${day(d)}**` : `${name} ${day(d)}`).join(' · ')}`;
+  }
+
+  const rows = Array.from({ length: hours }, (_, b) => {
+    const squares = cells.map(row => heatLevel(row[b], target)).join(' ');
+    return `${squares}   ${label(b)}${top.has(b) ? ' ⭐' : ''}`;
   });
 
-  const intro = dayName
-    ? `-# 🔮 Tomorrow's forecast (${dayName}) · based on last ${dayName} · your time zone`
-    : `-# Typical day last week · avg players online · your time zone`;
-  const lines = [intro, ...rows];
+  const lines = [`-# Predicted from last week's player counts · your time zone`];
+  if (dates) lines.push(dates);
+  lines.push(header, ...rows);
   if (ranked.length) {
     const best = ranked[0];
-    lines.push(`🎯 ${dayName ? `Best time to join tomorrow: **${label(best.b)}**` : `Most players are on around **${label(best.b)}**`} (~${best.value.toFixed(1)} players, ${Math.round(best.value / target * 100)}% of the goal)`);
+    lines.push(`🎯 Most players are on around **${label(best.b)}** (avg ${best.value.toFixed(1)}, ${Math.round(best.value / target * 100)}% of the goal)`);
   }
-  lines.push(`-# Share of the ${target}-player goal: ${HEAT.slice().reverse().map(level => `${level.emoji} ${level.label}`).join('  ')} · ⭐ top 3 times`);
-  return [{ name: dayName ? `📊 When players will be online tomorrow` : '📊 When players are online', value: lines.join('\n'), inline: false }];
-}
-
-// Forecast this week from last week: heatmap cells are 7 days back, so each
-// weekday column is that same day last week. Hours "at goal" = blocks whose
-// average reached the target.
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-function buildForecast(goal) {
-  const cells = goal.heatmap?.cells;
-  if (!Array.isArray(cells) || !cells.some(row => row.some(value => value != null))) return null;
-  const step = goal.heatmap.bucketHours || 1;
-  const target = goal.targetPlayers;
-  const days = cells.map((row, d) => {
-    const known = row.map((value, b) => ({ value, b })).filter(item => item.value != null);
-    const peak = known.reduce((best, item) => (item.value > (best?.value ?? -1) ? item : best), null);
-    const goalSeconds = known.filter(item => item.value >= target).length * step * 3600;
-    return { d, hasData: known.length > 0, peak, goalSeconds, qualifies: goalSeconds >= goal.requiredSeconds };
-  });
-  const weekday = Number.isInteger(goal.localWeekday) ? goal.localWeekday : null;
-  const bucket = Number.isInteger(goal.localHour) ? Math.floor(goal.localHour / step) : null;
-  const expectedNow = weekday != null && bucket != null ? cells[weekday]?.[bucket] ?? null : null;
-  return { days, step, today: weekday != null ? days[weekday] : null, expectedNow, likelyDays: days.filter(day => day.qualifies).length };
-}
-
-function forecastField(forecast, goal) {
-  const lines = ['-# Based on the same day last week · peak players · time at the goal'];
-  for (const day of forecast.days) {
-    const isToday = forecast.today && day.d === forecast.today.d;
-    const name = isToday ? `**${DAY_NAMES[day.d]}**` : DAY_NAMES[day.d];
-    if (!day.hasData) { lines.push(`⬛ ${name} · no data yet`); continue; }
-    const icon = day.qualifies ? '🟩' : heatLevel(day.peak.value, goal.targetPlayers);
-    const peakAt = hourLabel(day.peak.b * forecast.step).trim();
-    const older = goal.heatmap.filledDays?.includes(day.d) ? ' · *(older weeks)*' : '';
-    lines.push(`${icon} ${name} · peak ~${day.peak.value.toFixed(1)} at ${peakAt} · ${formatDuration(day.goalSeconds)} at goal${day.qualifies ? ' ✅' : ''}${older}`);
-  }
-  const need = forecast.likelyDays >= 7 ? '🔥 On pace for the full 7-day streak!'
-    : `Likely streak days: **${forecast.likelyDays} / 7**. Bring friends at peak times to push it up!`;
-  lines.push(need);
-  return { name: '🔮 This week’s forecast', value: lines.join('\n'), inline: false };
+  lines.push(`-# Share of the ${target}-player goal: ${NO_PLAYERS} none  ${HEAT.slice().reverse().map(level => `${level.emoji} ${level.label}`).join('  ')} · ⭐ busiest times`);
+  return [{ name: '📊 When players are online this week', value: lines.join('\n'), inline: false }];
 }
 
 function buildActiveGoalPanel(goal) {
-  const forecast = buildForecast(goal);
   const enoughPlayers = goal.sampleFresh && goal.onlinePlayers >= goal.targetPlayers;
   const weeklyDone = goal.streak >= 7;
   const missing = Math.max(0, goal.targetPlayers - goal.onlinePlayers);
 
-  // The forecast line is the same whether or not a live count is available.
   const onlineStatus = goal.sampleFresh
     ? `Active right now:\n**${goal.onlinePlayers} / ${goal.targetPlayers} players**\n${enoughPlayers ? '✅ Player target reached' : `Need ${missing} more players`}`
     : `Active right now:\n**— / ${goal.targetPlayers} players**\nWaiting for live tab-list count`;
   const step = goal.heatmap?.bucketHours || 2;
-  const lastWeekNow = forecast?.expectedNow != null
-    ? `\n-# Last week, this ${step}h block: ~${forecast.expectedNow.toFixed(1)} players` : '';
+  const bucket = Number.isInteger(goal.localHour) ? Math.floor(goal.localHour / step) : null;
+  const lastWeekValue = Number.isInteger(goal.localWeekday) && bucket != null ? goal.heatmap?.cells?.[goal.localWeekday]?.[bucket] ?? null : null;
+  const lastWeekNow = lastWeekValue != null ? `\n-# Last week, this ${step}h block: ~${lastWeekValue.toFixed(1)} players` : '';
   const todayCount = lastWeekNow + (goal.today?.average != null
     ? `\n-# Today: avg ${goal.today.average.toFixed(1)} · peak ${goal.today.peak}` : '\n-# Today: no players counted yet');
 
   const timerLine = goal.dayQualified ? '✅ Today complete'
     : enoughPlayers ? '🟢 Timer is counting'
       : (goal.secondsToday > 0 ? '⏸ Paused, resumes at the target' : '⏸ Starts when the player target is reached');
-  const todayForecast = !goal.dayQualified && forecast?.today?.hasData
-    ? `\n-# Forecast: ~${formatDuration(forecast.today.goalSeconds)} at goal today` : '';
-  const todayStatus = `**${formatDuration(goal.secondsToday)} / ${formatDuration(goal.requiredSeconds)}**\n${timerLine}${todayForecast}`;
+  const todayStatus = `**${formatDuration(goal.secondsToday)} / ${formatDuration(goal.requiredSeconds)}**\n${timerLine}`;
 
   const dots = streakDots(goal.weekHistory);
-  const streakForecast = !weeklyDone && forecast ? `\n-# Forecast: ${forecast.likelyDays} / 7 days` : '';
-  const streakStatus = `**${goal.streak} / 7 days**\n${weeklyDone ? '✅ Weekly goal complete' : dots || 'Complete the timer 7 days in a row'}${streakForecast}`;
+  const streakStatus = `**${goal.streak} / 7 days**\n${weeklyDone ? '✅ Weekly goal complete' : dots || 'Complete the timer 7 days in a row'}`;
 
   // One progress bar for today; the streak squares already show the week.
   const resets = goal.resetAt ? `\n-# 🕛 Day resets <t:${goal.resetAt}:R>` : '';
@@ -166,13 +128,8 @@ function buildActiveGoalPanel(goal) {
     { name: '🔥 STREAK', value: streakStatus, inline: true },
     { name: '📈 Today’s timer', value: `${goal.secondsToday > 0 ? progressBar(goal.secondsToday, goal.requiredSeconds, 10, goal.dayQualified ? '🟩' : '🟨') : 'No time counted yet today'}${resets}`, inline: false }
   ];
-  // Chart forecasts tomorrow (midnight = resetAt) so players can plan when to join.
-  const tomorrow = Number.isInteger(goal.localWeekday) ? (goal.localWeekday + 1) % 7 : null;
-  const heat = tomorrow != null
-    ? buildHeatmap(goal.heatmap, goal.targetPlayers, goal.resetAt || null, tomorrow)
-    : buildHeatmap(goal.heatmap, goal.targetPlayers, goal.resetAt ? goal.resetAt - 86400 : null);
+  const heat = buildHeatmap(goal.heatmap, goal.targetPlayers, goal.resetAt ? goal.resetAt - 86400 : null, goal.localWeekday, goal.timezone);
   if (heat) fields.push(...heat);
-  if (forecast) fields.push(forecastField(forecast, goal));
   fields.push({ name: '❓ Rules', value: '-# The timer pauses (it does not reset) if the count drops below the target. Missing a full day resets the streak.', inline: false });
 
   return {
@@ -184,4 +141,4 @@ function buildActiveGoalPanel(goal) {
   };
 }
 
-module.exports = { buildActiveGoalPanel, buildHeatmap, buildForecast, formatDuration, progressBar, COLORS };
+module.exports = { buildActiveGoalPanel, buildHeatmap, formatDuration, progressBar, COLORS };

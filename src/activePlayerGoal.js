@@ -6,8 +6,9 @@ const AVERAGE_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 // Samples are kept long enough to draw a 28-day "when players are online" heatmap.
 const HEATMAP_WINDOW_SECONDS = 28 * 24 * 60 * 60;
 const HEATMAP_BUCKET_HOURS = 2;
-// The panel shows the typical day over the last two weeks.
-const HEATMAP_LOOKBACK_SECONDS = 14 * 24 * 60 * 60;
+// The panel shows last week (7 days) so each weekday column is that exact day last week,
+// which is what the forecast for this week is built from.
+const HEATMAP_LOOKBACK_SECONDS = 7 * 24 * 60 * 60;
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => Date.now() } = {}) {
@@ -169,7 +170,7 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
     return { ...settings, day, onlinePlayers: online, sampleFresh: Number.isFinite(sampleAge) && sampleAge <= MAX_SAMPLE_GAP_SECONDS,
       secondsToday: daySeconds, dayQualified, streak, averageOnlinePlayers, averageCoverageSeconds,
       averageWindowSeconds: AVERAGE_WINDOW_SECONDS, resetAt, weekHistory: weekHistory(day, dayQualified),
-      heatmap: heatmap(timestamp) };
+      heatmap: heatmap(timestamp), today: todayActivity(timestamp, resetAt * 1000 - 86400 * 1000), localWeekday: local.weekday, localHour: local.hour };
   }
 
   const partsFormatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'short', hour: 'numeric', minute: 'numeric', second: 'numeric', hourCycle: 'h23' });
@@ -187,13 +188,43 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
     return days.map(day => day === today ? (todayQualified ? true : null) : qualified.has(day));
   }
 
-  // Average players online per weekday x 3-hour block over the last 28 days.
+  // Average players online per weekday x time block, from last week. Any
+  // weekday/time block with no data last week (bot was down) is filled from the
+  // older weeks still kept (up to 28 days) so no day is left blank.
   function heatmap(timestamp) {
+    const recent = averageCells(timestamp, HEATMAP_LOOKBACK_SECONDS);
+    const older = averageCells(timestamp, HEATMAP_WINDOW_SECONDS);
+    const filledDays = [];
+    const cells = recent.map((row, d) => {
+      if (row.every(value => value == null) && older[d].some(value => value != null)) filledDays.push(d);
+      return row.map((value, b) => value ?? older[d][b]);
+    });
+    return { bucketHours: HEATMAP_BUCKET_HOURS, cells, filledDays };
+  }
+
+  // Today's player activity since local midnight: time-weighted average and peak.
+  function todayActivity(timestamp, dayStartMillis) {
+    const samples = db.prepare(`SELECT sampled_at,online_players FROM active_player_samples
+      WHERE sampled_at>=? AND sampled_at<=? ORDER BY sampled_at ASC`).all(dayStartMillis, timestamp);
+    let playerSeconds = 0, coverage = 0, peak = 0;
+    for (let index = 0; index < samples.length; index++) {
+      const at = Number(samples[index].sampled_at);
+      const next = index + 1 < samples.length ? Number(samples[index + 1].sampled_at) : timestamp;
+      const seconds = Math.max(0, Math.min(next - at, MAX_SAMPLE_GAP_SECONDS * 1000) / 1000);
+      const players = Number(samples[index].online_players);
+      peak = Math.max(peak, players);
+      playerSeconds += seconds * players;
+      coverage += seconds;
+    }
+    return { average: coverage ? playerSeconds / coverage : null, peak: samples.length ? peak : null };
+  }
+
+  function averageCells(timestamp, lookbackSeconds) {
     const buckets = 24 / HEATMAP_BUCKET_HOURS;
     const playerSeconds = Array.from({ length: 7 }, () => new Array(buckets).fill(0));
     const coverage = Array.from({ length: 7 }, () => new Array(buckets).fill(0));
     const samples = db.prepare(`SELECT sampled_at,online_players FROM active_player_samples
-      WHERE sampled_at>=? AND sampled_at<=? ORDER BY sampled_at ASC`).all(timestamp - HEATMAP_LOOKBACK_SECONDS * 1000, timestamp);
+      WHERE sampled_at>=? AND sampled_at<=? ORDER BY sampled_at ASC`).all(timestamp - lookbackSeconds * 1000, timestamp);
     for (let index = 0; index < samples.length; index++) {
       const at = Number(samples[index].sampled_at);
       const next = index + 1 < samples.length ? Number(samples[index + 1].sampled_at) : timestamp;
@@ -205,8 +236,7 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
       playerSeconds[weekday][bucket] += seconds * Number(samples[index].online_players);
       coverage[weekday][bucket] += seconds;
     }
-    const cells = playerSeconds.map((row, d) => row.map((value, b) => coverage[d][b] ? value / coverage[d][b] : null));
-    return { bucketHours: HEATMAP_BUCKET_HOURS, cells };
+    return playerSeconds.map((row, d) => row.map((value, b) => coverage[d][b] ? value / coverage[d][b] : null));
   }
 
   return { setGoal, resetProgress, recordSample, markOffline, snapshot };

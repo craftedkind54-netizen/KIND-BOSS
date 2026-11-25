@@ -6,6 +6,8 @@ const AVERAGE_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 // Samples are kept long enough to draw a 28-day "when players are online" heatmap.
 const HEATMAP_WINDOW_SECONDS = 28 * 24 * 60 * 60;
 const HEATMAP_BUCKET_HOURS = 2;
+// The panel shows the typical day over the last two weeks.
+const HEATMAP_LOOKBACK_SECONDS = 14 * 24 * 60 * 60;
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => Date.now() } = {}) {
@@ -191,7 +193,7 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
     const playerSeconds = Array.from({ length: 7 }, () => new Array(buckets).fill(0));
     const coverage = Array.from({ length: 7 }, () => new Array(buckets).fill(0));
     const samples = db.prepare(`SELECT sampled_at,online_players FROM active_player_samples
-      WHERE sampled_at>=? AND sampled_at<=? ORDER BY sampled_at ASC`).all(timestamp - HEATMAP_WINDOW_SECONDS * 1000, timestamp);
+      WHERE sampled_at>=? AND sampled_at<=? ORDER BY sampled_at ASC`).all(timestamp - HEATMAP_LOOKBACK_SECONDS * 1000, timestamp);
     for (let index = 0; index < samples.length; index++) {
       const at = Number(samples[index].sampled_at);
       const next = index + 1 < samples.length ? Number(samples[index + 1].sampled_at) : timestamp;

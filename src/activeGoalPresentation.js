@@ -57,20 +57,30 @@ function buildHeatmap(heatmap, target, dayStart) {
   const step = heatmap.bucketHours || 1;
   const hours = cells[0].length;
   const label = b => dayStart ? `<t:${dayStart + b * step * 3600}:t>` : `\`${hourLabel(b * step)}\``;
-  // Squares first, time after: the squares always start at the left edge, so
-  // the columns line up no matter how wide each viewer's time label renders.
-  const rows = [];
-  for (let b = 0; b < hours; b++) rows.push(`${cells.map(row => heatLevel(row[b], target)).join('')}  ${label(b)}`);
-
-  let peak = null;
-  cells.forEach((row, d) => row.forEach((value, b) => { if (value != null && (!peak || value > peak.value)) peak = { value, d, b }; }));
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const lines = [`-# Sun ➜ Sat · ${step}h blocks · your time zone`, ...rows];
-  if (peak) {
-    const pct = Math.round(peak.value / target * 100);
-    lines.push(`🎯 Best time to play: **${days[peak.d]} ${label(peak.b)}** · avg ${peak.value.toFixed(1)} online (${pct}% of goal)`);
+  // A typical day: average each time block across every day that has data.
+  const typical = [];
+  for (let b = 0; b < hours; b++) {
+    const values = cells.map(row => row[b]).filter(value => value != null);
+    typical.push(values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null);
   }
-  lines.push(`-# ${NO_PLAYERS} nobody ${HEAT.slice().reverse().map(level => `${level.emoji} ${level.label}`).join(' ')} · share of the ${target}-player goal · last 28 days`);
+  const ranked = typical.map((value, b) => ({ value, b })).filter(item => item.value > 0).sort((a, z) => z.value - a.value);
+  const top = new Set(ranked.slice(0, 3).map(item => item.b));
+
+  // Bar first (left-aligned, spaced squares), then the time in the viewer's zone.
+  const WIDTH = 8;
+  const rows = typical.map((value, b) => {
+    const filled = value > 0 ? Math.max(1, Math.min(WIDTH, Math.round(value / target * WIDTH))) : 0;
+    const bar = [...Array(filled).fill(heatLevel(value, target)), ...Array(WIDTH - filled).fill('▫️')].join(' ');
+    const avg = value > 0 ? ` · ${value.toFixed(1)}` : '';
+    return `${bar}   ${label(b)}${avg}${top.has(b) ? ' ⭐' : ''}`;
+  });
+
+  const lines = [`-# Typical day over the last 2 weeks · avg players online · your time zone`, ...rows];
+  if (ranked.length) {
+    const best = ranked[0];
+    lines.push(`🎯 Most players are on around **${label(best.b)}** (avg ${best.value.toFixed(1)}, ${Math.round(best.value / target * 100)}% of the goal)`);
+  }
+  lines.push(`-# Share of the ${target}-player goal: ${HEAT.slice().reverse().map(level => `${level.emoji} ${level.label}`).join('  ')} · ⭐ top 3 times`);
   return [{ name: '📊 When players are online', value: lines.join('\n'), inline: false }];
 }
 

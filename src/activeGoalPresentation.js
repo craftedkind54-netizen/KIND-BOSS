@@ -28,13 +28,13 @@ function streakDots(history) {
 // Colour = average players online in that hour as a share of the goal target.
 // Cool-to-hot ramp; empty hours stay dark so busy times stand out.
 const HEAT = [
-  { at: 1, emoji: '🟩', label: 'goal' },
-  { at: 0.75, emoji: '🟨', label: '75%' },
-  { at: 0.5, emoji: '🟧', label: '50%' },
-  { at: 0.25, emoji: '🟪', label: '25%' },
-  { at: 0.0001, emoji: '🟦', label: '<25%' }
+  { at: 1, emoji: '🟢', label: 'goal' },
+  { at: 0.75, emoji: '🟡', label: '75%' },
+  { at: 0.5, emoji: '🟠', label: '50%' },
+  { at: 0.25, emoji: '🟣', label: '25%' },
+  { at: 0.0001, emoji: '🔵', label: '<25%' }
 ];
-const NO_PLAYERS = '⬛';
+const NO_PLAYERS = '⚫';
 function heatLevel(value, target) {
   if (value == null || value <= 0 || !(target > 0)) return NO_PLAYERS;
   const share = value / target;
@@ -108,7 +108,7 @@ function buildActiveGoalPanel(goal) {
   const step = goal.heatmap?.bucketHours || 2;
   const bucket = Number.isInteger(goal.localHour) ? Math.floor(goal.localHour / step) : null;
   const lastWeekValue = Number.isInteger(goal.localWeekday) && bucket != null ? goal.heatmap?.cells?.[goal.localWeekday]?.[bucket] ?? null : null;
-  const lastWeekNow = lastWeekValue != null ? `\n-# Last week, this ${step}h block: ~${lastWeekValue.toFixed(1)} players` : '';
+  const lastWeekNow = lastWeekValue != null ? `\n-# Last week, this ${step}h block: ~${Math.round(lastWeekValue)} ${Math.round(lastWeekValue) === 1 ? "player" : "players"}` : '';
   const todayCount = lastWeekNow + (goal.today?.average != null
     ? `\n-# Today: avg ${goal.today.average.toFixed(1)} · peak ${goal.today.peak}` : '\n-# Today: no players counted yet');
 

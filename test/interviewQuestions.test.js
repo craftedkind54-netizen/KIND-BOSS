@@ -21,7 +21,7 @@ class Builder {
   setMinValues(v){this.data.min=v;return this;}
   setMaxValues(v){this.data.max=v;return this;}
   setURL(v){this.data.url=v;return this;}
-  addOptions(v){assert.ok(v.length<=25);for(const x of v){assert.ok(x.label.length<=100);assert.ok(x.description.length<=100);}this.data.options=v;return this;}
+  addOptions(v){assert.ok(v.length<=25);for(const x of v){assert.ok(x.label.length<=100);assert.ok((x.description||"").length<=100);}this.data.options=v;return this;}
   addComponents(...v){this.components.push(...v.flat());assert.ok(this.components.length<=5);return this;}
 }
 const labels={general:'General Staff',head_general:'Head of General Staff',senior:'Senior Staff',head_senior:'Head Senior Staff',co_owner:'Co-Owner',owner:'Owner'};
@@ -33,6 +33,9 @@ function harness(target='senior', saved={}){
   vm.runInContext(source.slice(source.indexOf('function studyGuideEmbed('),source.indexOf('function availabilityHelp(')),ctx);
   vm.runInContext(source.slice(source.indexOf('function resultPages('),source.indexOf('\n}',source.indexOf('function resultPages('))+2),ctx);
   ctx.saveState=(_id,s)=>{row.interview_state=JSON.stringify(s);};
+  ctx.RANKS=Object.entries(labels).map(([key,label])=>({key,label}));
+  const settings=new Map();ctx.setting=(k,d='')=>settings.has(k)?settings.get(k):d;ctx.setSetting=(k,v)=>settings.set(k,String(v));
+  ctx.db={prepare:()=>({run:k=>settings.delete(k)})};
   return {ctx,row:()=>({...row}),run:async(action,extra={})=>{
     let payload;
     ctx.i={isButton:()=>true,customId:`sa:${action}:42`,user:{id:'lead'},update:async x=>{payload=x;},...extra};
@@ -264,4 +267,19 @@ test('speech shows one prompt with a 5-minute timer and scenarios get 90 seconds
   const h2=harness('senior',{started:true,questionBankVersion:bank.VERSION,questionBank:qb,category:sc,leadInterviewer:'lead',selected:[],grades:{},notes:{}});
   await h2.run('ask',{customId:'sa:ask:42:1'});
   assert.equal(h2.ctx.presenterState(h2.row()).seconds,90);
+});
+
+test('custom questions are saved per rank/category, used by new boards, and can be reset',()=>{
+  const {ctx}=harness('general');
+  const base=bank.categoryFor('general',0).qs;
+  ctx.saveBankQs('general',0,[...base,'Custom question?']);
+  assert.deepEqual([...ctx.bankSnapshot("general")[0].qs],[...base,'Custom question?']);
+  assert.deepEqual([...ctx.bankQs('senior',0)],bank.categoryFor('senior',0).qs);
+  const view=ctx.qEditorView('general',0);
+  assert.ok(view.embeds[0].data.description.includes('Custom question?'));
+  ctx.saveBankQs('general',0,Array.from({length:ctx.Q_MAX},(_,n)=>`Q${n}`));
+  const rows=ctx.boardRows({id:1,target_rank:'general',interview_state:'{}'},{started:true,category:0,questionBank:ctx.bankSnapshot('general'),selected:[]});
+  assert.ok(rows.length<=5);
+  ctx.resetBankQs('general',0);
+  assert.deepEqual([...ctx.bankQs('general',0)],base);
 });

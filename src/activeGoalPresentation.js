@@ -26,14 +26,15 @@ function streakDots(history) {
 }
 
 // Colour = average players online in that hour as a share of the goal target.
+// Cool-to-hot ramp; empty hours stay dark so busy times stand out.
 const HEAT = [
-  { at: 1, emoji: '🟩', label: '100%' },
+  { at: 1, emoji: '🟩', label: 'goal' },
   { at: 0.75, emoji: '🟨', label: '75%' },
   { at: 0.5, emoji: '🟧', label: '50%' },
-  { at: 0.25, emoji: '🟥', label: '25%' },
-  { at: 0.0001, emoji: '🟫', label: '1%' }
+  { at: 0.25, emoji: '🟪', label: '25%' },
+  { at: 0.0001, emoji: '🟦', label: '<25%' }
 ];
-const NO_PLAYERS = '⬜';
+const NO_PLAYERS = '⬛';
 function heatLevel(value, target) {
   if (value == null || value <= 0 || !(target > 0)) return NO_PLAYERS;
   const share = value / target;
@@ -56,26 +57,21 @@ function buildHeatmap(heatmap, target, dayStart) {
   const step = heatmap.bucketHours || 1;
   const hours = cells[0].length;
   const label = b => dayStart ? `<t:${dayStart + b * step * 3600}:t>` : `\`${hourLabel(b * step)}\``;
+  // Squares first, time after: the squares always start at the left edge, so
+  // the columns line up no matter how wide each viewer's time label renders.
   const rows = [];
-  for (let b = 0; b < hours; b++) rows.push(`${label(b)} ${cells.map(row => heatLevel(row[b], target)).join('')}`);
+  for (let b = 0; b < hours; b++) rows.push(`${cells.map(row => heatLevel(row[b], target)).join('')}  ${label(b)}`);
 
   let peak = null;
   cells.forEach((row, d) => row.forEach((value, b) => { if (value != null && (!peak || value > peak.value)) peak = { value, d, b }; }));
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const header = '-# Columns: Sun Mon Tue Wed Thu Fri Sat · times shown in your time zone';
-  const half = Math.ceil(rows.length / 2);
-  const fields = [
-    { name: '📊 When players are online', value: `${header}\n${rows.slice(0, half).join('\n')}`, inline: false },
-    { name: '​', value: rows.slice(half).join('\n'), inline: false }
-  ];
-  const summary = [];
+  const lines = [`-# Sun ➜ Sat · ${step}h blocks · your time zone`, ...rows];
   if (peak) {
     const pct = Math.round(peak.value / target * 100);
-    summary.push(`🎯 Best time to play: **${days[peak.d]} ${label(peak.b)}** (avg ${peak.value.toFixed(1)} online, ${pct}% of goal)`);
+    lines.push(`🎯 Best time to play: **${days[peak.d]} ${label(peak.b)}** · avg ${peak.value.toFixed(1)} online (${pct}% of goal)`);
   }
-  summary.push(`-# % of the ${target}-player goal online: ${HEAT.slice().reverse().map(level => `${level.emoji} ${level.label}+`).join(' ')} ${NO_PLAYERS} nobody · last 28 days`);
-  fields.push({ name: '​', value: summary.join('\n'), inline: false });
-  return fields;
+  lines.push(`-# ${NO_PLAYERS} nobody ${HEAT.slice().reverse().map(level => `${level.emoji} ${level.label}`).join(' ')} · share of the ${target}-player goal · last 28 days`);
+  return [{ name: '📊 When players are online', value: lines.join('\n'), inline: false }];
 }
 
 function buildActiveGoalPanel(goal) {

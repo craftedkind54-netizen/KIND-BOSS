@@ -128,13 +128,12 @@ function buildActiveGoalPanel(goal) {
   const weeklyDone = goal.streak >= 7;
   const missing = Math.max(0, goal.targetPlayers - goal.onlinePlayers);
 
+  // The forecast line is the same whether or not a live count is available.
   const onlineStatus = goal.sampleFresh
     ? `Active right now:\n**${goal.onlinePlayers} / ${goal.targetPlayers} players**\n${enoughPlayers ? '✅ Player target reached' : `Need ${missing} more players`}`
-    : forecast?.expectedNow != null
-      ? `**~${forecast.expectedNow.toFixed(1)} / ${goal.targetPlayers} players**\nExpected now (same time last week)`
-      : `**— / ${goal.targetPlayers} players**\nWaiting for live tab-list count`;
+    : `Active right now:\n**— / ${goal.targetPlayers} players**\nWaiting for live tab-list count`;
   const step = goal.heatmap?.bucketHours || 2;
-  const lastWeekNow = goal.sampleFresh && forecast?.expectedNow != null
+  const lastWeekNow = forecast?.expectedNow != null
     ? `\n-# Last week, this ${step}h block: ~${forecast.expectedNow.toFixed(1)} players` : '';
   const todayCount = lastWeekNow + (goal.today?.average != null
     ? `\n-# Today: avg ${goal.today.average.toFixed(1)} · peak ${goal.today.peak}` : '\n-# Today: no players counted yet');

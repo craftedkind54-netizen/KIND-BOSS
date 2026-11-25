@@ -3,6 +3,10 @@
 const DEFAULTS = Object.freeze({ targetPlayers: 15, requiredSeconds: 2 * 60 * 60, prize: '', timezone: 'Pacific/Honolulu' });
 const MAX_SAMPLE_GAP_SECONDS = 90;
 const AVERAGE_WINDOW_SECONDS = 7 * 24 * 60 * 60;
+// Samples are kept long enough to draw a 28-day "when players are online" heatmap.
+const HEATMAP_WINDOW_SECONDS = 28 * 24 * 60 * 60;
+const HEATMAP_BUCKET_HOURS = 3;
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => Date.now() } = {}) {
   db.exec(`
@@ -75,7 +79,7 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
 
   function recordSample(onlinePlayers, timestamp = now()) {
     if (!Number.isSafeInteger(onlinePlayers) || onlinePlayers < 0 || onlinePlayers > 10000) throw new Error('Invalid online player count.');
-    const windowStart = timestamp - AVERAGE_WINDOW_SECONDS * 1000;
+    const windowStart = timestamp - HEATMAP_WINDOW_SECONDS * 1000;
     db.prepare(`INSERT INTO active_player_samples(sampled_at,online_players) VALUES(?,?)
       ON CONFLICT(sampled_at) DO UPDATE SET online_players=excluded.online_players`).run(timestamp, onlinePlayers);
     db.prepare('DELETE FROM active_player_samples WHERE sampled_at<?').run(windowStart - MAX_SAMPLE_GAP_SECONDS * 1000);
@@ -157,9 +161,50 @@ function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => 
       averageCoverageSeconds += seconds;
     }
     const averageOnlinePlayers = averageCoverageSeconds > 0 ? activePlayerSeconds / averageCoverageSeconds : null;
+    const local = localParts(timestamp);
+    const secondsSinceMidnight = local.hour * 3600 + local.minute * 60 + local.second;
+    const resetAt = Math.floor((timestamp + (86400 - secondsSinceMidnight) * 1000) / 1000);
     return { ...settings, day, onlinePlayers: online, sampleFresh: Number.isFinite(sampleAge) && sampleAge <= MAX_SAMPLE_GAP_SECONDS,
       secondsToday: daySeconds, dayQualified, streak, averageOnlinePlayers, averageCoverageSeconds,
-      averageWindowSeconds: AVERAGE_WINDOW_SECONDS };
+      averageWindowSeconds: AVERAGE_WINDOW_SECONDS, resetAt, weekHistory: weekHistory(day, dayQualified),
+      heatmap: heatmap(timestamp) };
+  }
+
+  const partsFormatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'short', hour: 'numeric', minute: 'numeric', second: 'numeric', hourCycle: 'h23' });
+  function localParts(millis) {
+    const parts = Object.fromEntries(partsFormatter.formatToParts(new Date(millis)).map(part => [part.type, part.value]));
+    return { weekday: WEEKDAYS.indexOf(parts.weekday), hour: Number(parts.hour) % 24, minute: Number(parts.minute), second: Number(parts.second) };
+  }
+
+  // Last 7 local days, oldest first: true = qualified, false = missed, null = today still open.
+  function weekHistory(today, todayQualified) {
+    const days = [today];
+    for (let i = 0; i < 6; i++) days.unshift(getPreviousDay(days[0]));
+    const rows = db.prepare(`SELECT local_day,qualified FROM active_goal_days WHERE local_day>=?`).all(days[0]);
+    const qualified = new Set(rows.filter(row => row.qualified).map(row => row.local_day));
+    return days.map(day => day === today ? (todayQualified ? true : null) : qualified.has(day));
+  }
+
+  // Average players online per weekday x 3-hour block over the last 28 days.
+  function heatmap(timestamp) {
+    const buckets = 24 / HEATMAP_BUCKET_HOURS;
+    const playerSeconds = Array.from({ length: 7 }, () => new Array(buckets).fill(0));
+    const coverage = Array.from({ length: 7 }, () => new Array(buckets).fill(0));
+    const samples = db.prepare(`SELECT sampled_at,online_players FROM active_player_samples
+      WHERE sampled_at>=? AND sampled_at<=? ORDER BY sampled_at ASC`).all(timestamp - HEATMAP_WINDOW_SECONDS * 1000, timestamp);
+    for (let index = 0; index < samples.length; index++) {
+      const at = Number(samples[index].sampled_at);
+      const next = index + 1 < samples.length ? Number(samples[index + 1].sampled_at) : timestamp;
+      const seconds = Math.max(0, Math.min(next - at, MAX_SAMPLE_GAP_SECONDS * 1000) / 1000);
+      if (!seconds) continue;
+      const { weekday, hour } = localParts(at);
+      if (weekday < 0) continue;
+      const bucket = Math.floor(hour / HEATMAP_BUCKET_HOURS);
+      playerSeconds[weekday][bucket] += seconds * Number(samples[index].online_players);
+      coverage[weekday][bucket] += seconds;
+    }
+    const cells = playerSeconds.map((row, d) => row.map((value, b) => coverage[d][b] ? value / coverage[d][b] : null));
+    return { bucketHours: HEATMAP_BUCKET_HOURS, cells };
   }
 
   return { setGoal, resetProgress, recordSample, markOffline, snapshot };

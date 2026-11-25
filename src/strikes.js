@@ -309,7 +309,7 @@ function activeGoalSettingsEmbed(){
 function activeGoalSettingsRows(){return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('activegoal:set').setLabel('Set Active Goal').setStyle(ButtonStyle.Primary))];}
 function activeGoalProgressEmbed(g=activePlayerGoal.snapshot()){
   const panel=buildActiveGoalPanel(g);
-  return new EmbedBuilder().setColor(0x35c5b5)
+  return new EmbedBuilder().setColor(panel.color)
     .setTitle(panel.title)
     .setDescription(panel.description)
     .addFields(panel.fields)
@@ -479,6 +479,7 @@ app.post('/api/v1/minecraft/event', async (req,res) => {
     if(type==='active_sample'){
       const online=Number(req.body?.onlinePlayers);
       const progress=activePlayerGoal.recordSample(online);
+      await announceActiveGoalCompletion(progress);
       // Each sample comes from the live Bukkit tab list. Keep the artwork in
       // sync with that count instead of leaving it stale behind the 60s panel
       // refresh throttle.

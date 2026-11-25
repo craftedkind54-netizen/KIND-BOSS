@@ -67,3 +67,11 @@ test('opening a request marks it claimed and removes the buttons', async () => {
   assert.deepEqual(edits[0].components, []);
   assert.match(edits[0].embeds[0].data.description, /Ticket opened by <@bob>/);
 });
+
+test('poll requests can only be handled by Owner/Co-Owner', async () => {
+  const h = harness();
+  const { message } = h.post('any', 'poll');
+  assert.match(await h.press('sf:open', h.member('bob', ['staff']), message), /poll requests/);
+  await h.press('sf:open', h.member('co', ['co']), message);
+  assert.equal(h.created.length, 1);
+});

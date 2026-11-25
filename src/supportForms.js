@@ -21,6 +21,7 @@ const LEADER_CHANNEL = 'staff-complaints';
 const CHANNEL_EMOJI = { complaints: '📝', 'player-reports': '🚨', 'poll-requests': '📊', 'staff-questions': '❓', 'staff-complaints': '🔒' };
 // Matches the server's naming style, e.g. 📋・application-log
 const displayName = base => `${CHANNEL_EMOJI[base]}・${base}`;
+const LEADER_ONLY = new Set(['staff-complaints', 'poll-requests']);
 const baseOf = name => name.replace(/^[^a-z0-9]+/, '');
 // [id, label (max 45), style, maxLength, required, placeholder (max 100)]
 const FIELDS = {
@@ -91,17 +92,20 @@ module.exports = function setupSupportForms(d) {
     // Find by base name so channels made before emojis were added get renamed, not duplicated.
     let ch = guild.channels.cache.find(c => c.type === ChannelType.GuildText && baseOf(c.name) === name);
     if (ch && ch.name !== displayName(name)) await ch.setName(displayName(name), 'Add emoji to support queue channel').catch(e => console.error('Rename support channel error:', e));
+    leadersOnly = leadersOnly || LEADER_ONLY.has(name);
+    const roles = await guild.roles.fetch();
+    const viewer = leadersOnly ? [OWNER_ROLE_ID, CO_OWNER_ROLE_ID] : STAFF_ROLE_IDS;
+    const allow = [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.SendMessages];
+    const overwrites = [{ id: guild.roles.everyone.id, type: 0, deny: [PermissionsBitField.Flags.ViewChannel] }];
+    for (const id of new Set(viewer.filter(Boolean))) if (id !== guild.id && roles.has(id)) overwrites.push({ id, type: 0, allow });
+    overwrites.push({ id: client.user.id, type: 1, allow: [...allow, PermissionsBitField.Flags.EmbedLinks, PermissionsBitField.Flags.ManageMessages] });
+    // Leader-only channels made earlier with staff access are locked down on startup.
+    if (ch && leadersOnly) await ch.permissionOverwrites.set(overwrites, 'Owner/Co-Owner only').catch(e => console.error('Lock support channel error:', e));
     if (!ch) {
-      const roles = await guild.roles.fetch();
-      const viewer = leadersOnly ? [OWNER_ROLE_ID, CO_OWNER_ROLE_ID] : STAFF_ROLE_IDS;
-      const allow = [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.SendMessages];
-      const overwrites = [{ id: guild.roles.everyone.id, type: 0, deny: [PermissionsBitField.Flags.ViewChannel] }];
-      for (const id of new Set(viewer.filter(Boolean))) if (id !== guild.id && roles.has(id)) overwrites.push({ id, type: 0, allow });
-      overwrites.push({ id: client.user.id, type: 1, allow: [...allow, PermissionsBitField.Flags.EmbedLinks, PermissionsBitField.Flags.ManageMessages] });
       const parent = findStaffCategory(guild);
       ch = await guild.channels.create({
         name: displayName(name), type: ChannelType.GuildText, parent: parent?.id, permissionOverwrites: overwrites,
-        topic: leadersOnly ? 'Complaints about staff members. Owner/Co-Owner only.' : 'Support requests from the support panel.',
+        topic: name === 'poll-requests' ? 'Server poll requests. Owner/Co-Owner only.' : leadersOnly ? 'Complaints about staff members. Owner/Co-Owner only.' : 'Support requests from the support panel.',
         reason: 'Support forms queue channel',
       });
       console.log(`✅ Created support queue channel #${displayName(name)}`);
@@ -147,7 +151,7 @@ module.exports = function setupSupportForms(d) {
   }
   function submissionEmbed(type, user, target, values) {
     const t = TYPES[type];
-    const handler = target === 'lead' ? '🔒 Owner/Co-Owner only (about a staff member)' : target === 'any' ? 'Any staff member' : `<@${target}> (requested)`;
+    const handler = type === 'poll' ? '🔒 Owner/Co-Owner' : target === 'lead' ? '🔒 Owner/Co-Owner only (about a staff member)' : target === 'any' ? 'Any staff member' : `<@${target}> (requested)`;
     const embed = new EmbedBuilder().setTitle(t.title).setColor(t.color)
       .setDescription(`**From:** <@${user.id}> (${user.username})\n**Handled by:** ${handler}\n**Status:** 🕒 Waiting for staff`)
       .setFooter({ text: `sf|type=${type}|user=${user.id}|target=${target}` })
@@ -170,6 +174,7 @@ module.exports = function setupSupportForms(d) {
   }
   function canHandle(member, meta) {
     if (!d.isStaff(member) && !leader(member)) return '❌ Staff only.';
+    if (meta.type === 'poll' && !leader(member)) return '❌ Only the Owner or Co-Owner can handle poll requests.';
     if (meta.target === 'lead' && !leader(member)) return '❌ Only the Owner or Co-Owner can handle complaints about staff.';
     if (meta.target && !['any', 'lead'].includes(meta.target) && meta.target !== member.id && !leader(member)) return `❌ This request is for <@${meta.target}>. Only they (or the Owner/Co-Owner) can pick it up.`;
     return null;
@@ -178,7 +183,7 @@ module.exports = function setupSupportForms(d) {
   // ---------- interactions ----------
   async function handle(i) {
     const id = i.customId;
-    if (id.startsWith('sf:new:')) { const type = id.split(':')[2]; if (!TYPES[type]) return; return chooseStaffStep(i, type); }
+    if (id.startsWith('sf:new:')) { const type = id.split(':')[2]; if (!TYPES[type]) return; if (type === 'poll') return i.showModal(modalFor('poll', 'any')); return chooseStaffStep(i, type); }
     if (id.startsWith('sf:pick:') && i.isStringSelectMenu()) return i.showModal(modalFor(id.split(':')[2], i.values[0]));
     if (id.startsWith('sf:any:')) return i.showModal(modalFor(id.split(':')[2], 'any'));
     if (id === 'sf:lead:complaint') return i.showModal(modalFor('complaint', 'lead'));

@@ -24,11 +24,11 @@ test('renders the clean text-only live goal panel without an image', () => {
   assert.match(content, /5 \/ 10 players/);
   assert.match(content, /30m \/ 2h/);
   assert.match(content, /Need 5 more players/);
-  assert.match(content, /timer only counts while the player target is met/);
+  assert.match(content, /timer pauses \(it does not reset\)/);
   assert.match(content, /3 \/ 7 days/);
   assert.match(content, /Lava casting rule will be removed/);
   assert.match(content, /ACTIVE PLAYER GOAL/);
-  assert.match(content, /WEEKLY STREAK/);
+  assert.match(content, /STREAK/);
   assert.doesNotMatch(content, /attachment:|\.png|Border expands by 5k|Past 7-day average/);
 });
 
@@ -42,11 +42,23 @@ test('a changed target and prize appear in the next text panel', () => {
 
 test('shows waiting state when the Minecraft tab-list sample is stale', () => {
   const panel = buildActiveGoalPanel({ ...goal, sampleFresh: false });
-  assert.match(panel.fields.find(field => field.name === '👥 ACTIVE GOAL').value, /Waiting for live tab-list count/);
+  assert.match(panel.fields.find(field => field.name === '👥 ONLINE NOW').value, /Waiting for live tab-list count/);
 });
 
 test('clearly shows when the player target is met and today is complete', () => {
   const panel = buildActiveGoalPanel({ ...goal, onlinePlayers: 10, dayQualified: true });
-  assert.match(panel.fields.find(field => field.name === '👥 ACTIVE GOAL').value, /Player target reached/);
-  assert.match(panel.fields.find(field => field.name === '⏱ TIMER').value, /Today complete/);
+  assert.match(panel.fields.find(field => field.name === '👥 ONLINE NOW').value, /Player target reached/);
+  assert.match(panel.fields.find(field => field.name === '⏱ TODAY').value, /Today complete/);
+});
+
+test('draws the 28-day activity heatmap and busiest block', () => {
+  const cells = Array.from({ length: 7 }, () => new Array(8).fill(1));
+  cells[6][2] = 9;
+  const panel = buildActiveGoalPanel({ ...goal, heatmap: { bucketHours: 3, cells }, weekHistory: [true, true, false, true, true, true, null], resetAt: 1800000000 });
+  const heat = panel.fields.find(field => field.name.includes('When players are online')).value;
+  assert.match(heat, /Saturday 6a–9a/);
+  assert.match(heat, /🟨/);
+  assert.ok(heat.length < 1024);
+  assert.match(JSON.stringify(panel), /<t:1800000000:R>/);
+  assert.match(JSON.stringify(panel), /✅✅❌✅✅✅⏳/);
 });

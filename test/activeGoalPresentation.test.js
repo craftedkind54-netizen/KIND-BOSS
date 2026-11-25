@@ -51,14 +51,19 @@ test('clearly shows when the player target is met and today is complete', () => 
   assert.match(panel.fields.find(field => field.name === '⏱ TODAY').value, /Today complete/);
 });
 
-test('draws the 28-day activity heatmap and busiest block', () => {
-  const cells = Array.from({ length: 7 }, () => new Array(8).fill(1));
-  cells[6][2] = 9;
-  const panel = buildActiveGoalPanel({ ...goal, heatmap: { bucketHours: 3, cells }, weekHistory: [true, true, false, true, true, true, null], resetAt: 1800000000 });
-  const heat = panel.fields.find(field => field.name.includes('When players are online')).value;
-  assert.match(heat, /Saturday 6a–9a/);
-  assert.match(heat, /🟨/);
-  assert.ok(heat.length < 1024);
-  assert.match(JSON.stringify(panel), /<t:1800000000:R>/);
-  assert.match(JSON.stringify(panel), /✅✅⬛✅✅✅⏳/);
+test('draws an hourly heatmap as % of goal with viewer-local timestamps', () => {
+  const cells = Array.from({ length: 7 }, () => new Array(24).fill(2));
+  cells[5][18] = 9;
+  const panel = buildActiveGoalPanel({ ...goal, heatmap: { bucketHours: 1, cells }, weekHistory: [true, true, false, true, true, true, null], resetAt: 1800000000 });
+  const heatFields = panel.fields.filter(field => /<t:\d+:t>/.test(field.value));
+  assert.ok(heatFields.length >= 2);
+  for (const field of panel.fields) assert.ok(field.value.length <= 1024, field.name);
+  const all = JSON.stringify(panel);
+  assert.match(all, new RegExp(`<t:${1800000000 - 86400 + 18 * 3600}:t>`));
+  assert.match(all, /Friday/);
+  assert.match(all, /90% of goal/);
+  assert.match(all, /🟨/);
+  assert.match(all, /🟥/);
+  assert.match(all, /✅✅▫️✅✅✅⏳/);
+  assert.ok(JSON.stringify(panel).length < 6000);
 });

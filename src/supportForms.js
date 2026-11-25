@@ -8,7 +8,7 @@
 const {
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionsBitField,
   StringSelectMenuBuilder, UserSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
-  MessageFlags, Events,
+  MessageFlags, Events, LabelBuilder, FileUploadBuilder,
 } = require('discord.js');
 
 const TYPES = {
@@ -29,12 +29,14 @@ const FIELDS = {
     ['subject', 'What is your complaint about?', 'Short', 100, true, ''],
     ['details', 'What happened?', 'Paragraph', 1000, true, 'Explain what happened, when, and who was involved.'],
     ['wanted', 'What would you like staff to do?', 'Paragraph', 500, false, ''],
+    ['files', 'Upload files (optional)', 'File', 10, false, 'Screenshots or clips that show what happened.'],
   ],
   report: [
     ['who', 'Who are you reporting?', 'Short', 100, true, 'Minecraft name and/or Discord username'],
     ['where', 'Where did it happen?', 'Short', 100, true, 'Minecraft or Discord (channel / location)'],
     ['what', 'What did they do?', 'Paragraph', 1000, true, ''],
-    ['evidence', 'What evidence do you have?', 'Paragraph', 1000, true, 'Video link is best. Chat or Discord: screenshots or message links.'],
+    ['files', 'Upload your evidence', 'File', 10, false, 'Video is best. Minecraft chat or Discord messages: screenshots.'],
+    ['evidence', 'Video link (if too big to upload)', 'Short', 300, false, 'YouTube, Medal or a Discord message link'],
   ],
   poll: [
     ['question', 'Poll question', 'Short', 300, true, ''],
@@ -45,7 +47,7 @@ const FIELDS = {
     ['question', 'What is your question?', 'Paragraph', 1000, true, ''],
   ],
 };
-const EVIDENCE_TIP = '**Best evidence:** a **video** link (YouTube, Medal, etc.).\n**Minecraft chat or Discord messages:** screenshots or Discord message links.\nYou can upload files directly once a staff member opens your ticket.';
+const EVIDENCE_TIP = '**Best evidence:** a **video** 🎥. For Minecraft chat or Discord messages, use **screenshots** 📸.\nYou can drop files straight into the form. If a video is too big, paste a link (YouTube, Medal, etc.).';
 
 function parseMeta(message) {
   const text = message?.embeds?.[0]?.footer?.text || '';
@@ -123,10 +125,17 @@ module.exports = function setupSupportForms(d) {
     const t = TYPES[type];
     const modal = new ModalBuilder().setCustomId(`sf:submit:${type}:${target}`).setTitle(t.label);
     for (const [id, label, style, max, required, placeholder] of FIELDS[type]) {
-      const input = new TextInputBuilder().setCustomId(id).setLabel(label)
-        .setStyle(TextInputStyle[style]).setMaxLength(max).setRequired(required);
-      if (placeholder) input.setPlaceholder(placeholder);
-      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      const wrap = new LabelBuilder().setLabel(label);
+      if (style === 'File') {
+        // Drop box: players drag files straight into the form.
+        if (placeholder) wrap.setDescription(placeholder);
+        wrap.setFileUploadComponent(new FileUploadBuilder().setCustomId(id).setMinValues(1).setMaxValues(max).setRequired(required));
+      } else {
+        const input = new TextInputBuilder().setCustomId(id).setStyle(TextInputStyle[style]).setMaxLength(max).setRequired(required);
+        if (placeholder) input.setPlaceholder(placeholder);
+        wrap.setTextInputComponent(input);
+      }
+      modal.addLabelComponents(wrap);
     }
     return modal;
   }
@@ -192,16 +201,31 @@ module.exports = function setupSupportForms(d) {
       const [, , type, target] = id.split(':');
       if (!TYPES[type]) return;
       await i.deferReply({ flags: MessageFlags.Ephemeral });
-      const values = Object.fromEntries(FIELDS[type].map(([fid]) => [fid, i.fields.getTextInputValue(fid) || '']));
+      const textFields = FIELDS[type].filter(f => f[2] !== 'File');
+      const values = Object.fromEntries(textFields.map(([fid]) => [fid, i.fields.getTextInputValue(fid) || '']));
+      const uploads = FIELDS[type].filter(f => f[2] === 'File')
+        .flatMap(([fid]) => [...(i.fields.getUploadedFiles(fid)?.values() || [])]);
       const channel = await ensureChannel(i.guild, target === 'lead' ? LEADER_CHANNEL : TYPES[type].channel, target === 'lead');
       const specific = !['any', 'lead'].includes(target);
-      await channel.send({
+      const embed = submissionEmbed(type, i.user, target, values);
+      if (uploads.length) embed.addFields({ name: '📎 Uploaded files', value: `${uploads.length} file(s) attached below.` });
+      const payload = {
         content: specific ? `<@${target}>, a player requested you for this.` : undefined,
-        embeds: [submissionEmbed(type, i.user, target, values)],
+        embeds: [embed],
         components: queueRows(),
         allowedMentions: { users: specific ? [target] : [] },
-      });
-      return i.editReply({ content: `✅ Your ${{ complaint: 'complaint', report: 'report', poll: 'poll request', question: 'question' }[type]} was sent to staff. You will get a private ticket when ${specific ? `<@${target}>` : 'a staff member'} picks it up.${type === 'report' ? '\nYou can upload screenshots or videos in that ticket.' : ''}` });
+      };
+      // Re-upload the files so they stay on the staff post (form upload links expire).
+      // If they are too big for this server's upload limit, post the links instead.
+      const files = uploads.map(a => ({ attachment: a.url, name: a.name }));
+      let tooBig = false;
+      try { await channel.send({ ...payload, files }); } catch (e) {
+        if (!files.length) throw e;
+        tooBig = true;
+        embed.spliceFields(-1, 1, { name: '📎 Uploaded files (links, may expire)', value: uploads.map(a => `[${a.name}](${a.url})`).join('\n').slice(0, 1024) });
+        await channel.send(payload);
+      }
+      return i.editReply({ content: `✅ Your ${{ complaint: 'complaint', report: 'report', poll: 'poll request', question: 'question' }[type]} was sent to staff${uploads.length ? ` with ${uploads.length} file(s)` : ''}. You will get a private ticket when ${specific ? `<@${target}>` : 'a staff member'} picks it up.${tooBig ? '\n⚠️ Your files were too big to copy, so please upload them again in your ticket.' : ''}` });
     }
 
     if ((id === 'sf:open' || id === 'sf:log') && i.isButton()) {
@@ -215,7 +239,8 @@ module.exports = function setupSupportForms(d) {
         const log = await i.guild.channels.fetch(CLOSED_TICKET_LOG_CHANNEL_ID).catch(() => null);
         if (!log) return i.editReply('❌ The ticket log channel could not be found.');
         const embed = withStatus(i.message, `📁 Sent to ticket log by <@${i.user.id}> (no ticket opened)`);
-        await log.send({ embeds: [embed] });
+        const files = [...(i.message.attachments?.values() || [])].map(a => ({ attachment: a.url, name: a.name }));
+        await log.send({ embeds: [embed], files }).catch(() => log.send({ embeds: [embed] }));
         await i.message.edit({ embeds: [embed], components: [] });
         return i.editReply('📁 Sent to the ticket log.');
       }
@@ -227,12 +252,15 @@ module.exports = function setupSupportForms(d) {
       const ticket = result.channel;
       const copy = EmbedBuilder.from(i.message.embeds[0]);
       copy.setDescription((copy.data.description || '').replace(/\*\*Status:\*\*.*$/m, `**Picked up by:** <@${i.user.id}>`));
-      await ticket.send({
+      const ticketPost = withFiles => ticket.send({
         content: `<@${i.user.id}> is handling your request, <@${applicant.id}>.${meta.type === 'report' ? '\nYou can upload screenshots or videos here.' : ''}`,
         embeds: [copy],
+        files: withFiles ? [...(i.message.attachments?.values() || [])].map(a => ({ attachment: a.url, name: a.name })) : [],
         components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('sf:addStaff').setLabel('Add Staff Member').setEmoji('➕').setStyle(ButtonStyle.Primary))],
         allowedMentions: { users: [i.user.id, applicant.id] },
-      }).catch(e => console.error('Support form ticket post error:', e));
+      });
+      // Files go with the request into the ticket; if they can't be copied, staff still see them on the queue post.
+      await ticketPost(true).catch(() => ticketPost(false)).catch(e => console.error('Support form ticket post error:', e));
       await i.message.edit({ embeds: [withStatus(i.message, `🟢 Ticket opened by <@${i.user.id}>: ${ticket}`)], components: [] });
       return i.editReply(`✅ Ticket opened: ${ticket}`);
     }

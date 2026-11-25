@@ -60,5 +60,5 @@ test('draws the 28-day activity heatmap and busiest block', () => {
   assert.match(heat, /🟨/);
   assert.ok(heat.length < 1024);
   assert.match(JSON.stringify(panel), /<t:1800000000:R>/);
-  assert.match(JSON.stringify(panel), /✅✅❌✅✅✅⏳/);
+  assert.match(JSON.stringify(panel), /✅✅⬛✅✅✅⏳/);
 });

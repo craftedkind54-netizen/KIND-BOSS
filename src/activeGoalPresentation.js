@@ -21,7 +21,8 @@ function progressBar(current, total, width = 10, fill = '🟩') {
 
 function streakDots(history) {
   if (!Array.isArray(history) || !history.length) return '';
-  return history.map(day => day === true ? '✅' : day === false ? '❌' : '⏳').join('');
+  // Missed days are a quiet grey square so a new streak doesn't open on a wall of red X's.
+  return history.map(day => day === true ? '✅' : day === false ? '⬛' : '⏳').join('');
 }
 
 const HEAT = ['⬛', '🟦', '🟪', '🟨'];
@@ -41,20 +42,18 @@ function buildHeatmap(heatmap) {
   const cells = heatmap?.cells;
   if (!Array.isArray(cells) || !cells.some(row => row.some(value => value != null))) return null;
   const max = Math.max(...cells.flat().filter(value => value != null));
-  const buckets = cells[0].length;
-  // Full-width letters are roughly emoji-width, so the day header lines up.
-  const lines = ['`   ` ＳＭＴＷＴＦＳ'];
-  for (let b = 0; b < buckets; b++) {
-    lines.push(`\`${hourLabel(b * heatmap.bucketHours)}\` ${cells.map(row => heatLevel(row[b], max)).join('')}`);
-  }
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  // One row per day: text labels sit to the left of the squares, so nothing
+  // has to line up above emoji (letters and emoji have different widths).
+  const lines = [`\`   \` 12a ➜ 9p · ${heatmap.bucketHours}h blocks`];
+  cells.forEach((row, d) => lines.push(`\`${days[d].slice(0, 3)}\` ${row.map(value => heatLevel(value, max)).join('')}`));
   let peak = null;
   cells.forEach((row, d) => row.forEach((value, b) => { if (value != null && (!peak || value > peak.value)) peak = { value, d, b }; }));
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   if (peak) {
     const start = peak.b * heatmap.bucketHours;
-    lines.push(`🔥 Busiest: **${days[peak.d]} ${hourLabel(start).trim()}–${hourLabel((start + heatmap.bucketHours) % 24).trim()}** (avg ${peak.value.toFixed(1)} online)`);
+    lines.push(`🎯 Best time to play: **${days[peak.d]} ${hourLabel(start).trim()}–${hourLabel((start + heatmap.bucketHours) % 24).trim()}** (avg ${peak.value.toFixed(1)} online)`);
   }
-  lines.push('⬛ none 🟦 low 🟪 busy 🟨 peak · last 28 days');
+  lines.push('-# ⬛ none 🟦 low 🟪 busy 🟨 peak · last 28 days');
   return lines.join('\n');
 }
 
@@ -75,19 +74,17 @@ function buildActiveGoalPanel(goal) {
   const dots = streakDots(goal.weekHistory);
   const streakStatus = `**${goal.streak} / 7 days**\n${weeklyDone ? '✅ Weekly goal complete' : dots || 'Complete the timer 7 days in a row'}`;
 
+  // One progress bar for today; the streak squares already show the week.
+  const resets = goal.resetAt ? `\n-# 🕛 Day resets <t:${goal.resetAt}:R>` : '';
   const fields = [
     { name: '👥 ONLINE NOW', value: onlineStatus, inline: true },
     { name: '⏱ TODAY', value: todayStatus, inline: true },
     { name: '🔥 STREAK', value: streakStatus, inline: true },
-    { name: 'Today’s progress', value: progressBar(goal.secondsToday, goal.requiredSeconds, 10, goal.dayQualified ? '🟩' : '🟨'), inline: false },
-    { name: 'Weekly progress', value: progressBar(goal.streak, 7, 7, '🟩'), inline: false }
+    { name: '📈 Today’s timer', value: `${progressBar(goal.secondsToday, goal.requiredSeconds, 10, goal.dayQualified ? '🟩' : '🟨')}${resets}`, inline: false }
   ];
-  if (goal.resetAt) {
-    fields.push({ name: '🕛 Day resets', value: `<t:${goal.resetAt}:R> · <t:${goal.resetAt}:t> your time`, inline: false });
-  }
   const heat = buildHeatmap(goal.heatmap);
   if (heat) fields.push({ name: '📊 When players are online', value: heat, inline: false });
-  fields.push({ name: '❓ Rules', value: 'The timer pauses (it does not reset) if the count drops below the target. Missing a full day resets the streak.', inline: false });
+  fields.push({ name: '❓ Rules', value: '-# The timer pauses (it does not reset) if the count drops below the target. Missing a full day resets the streak.', inline: false });
 
   return {
     title: '🏆 ACTIVE PLAYER GOAL',

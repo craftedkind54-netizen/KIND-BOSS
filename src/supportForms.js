@@ -18,6 +18,10 @@ const TYPES = {
   question: { label: 'Ask Staff a Question', emoji: '❓', channel: 'staff-questions', title: '❓ Staff Question', color: 0x3498db, blurb: 'Ask staff anything in private.' },
 };
 const LEADER_CHANNEL = 'staff-complaints';
+const CHANNEL_EMOJI = { complaints: '📝', 'player-reports': '🚨', 'poll-requests': '📊', 'staff-questions': '❓', 'staff-complaints': '🔒' };
+// Matches the server's naming style, e.g. 📋・application-log
+const displayName = base => `${CHANNEL_EMOJI[base]}・${base}`;
+const baseOf = name => name.replace(/^[^a-z0-9]+/, '');
 // [id, label (max 45), style, maxLength, required, placeholder (max 100)]
 const FIELDS = {
   complaint: [
@@ -84,7 +88,9 @@ module.exports = function setupSupportForms(d) {
     const known = channelIds.get(name);
     const cached = known && guild.channels.cache.get(known);
     if (cached) return cached;
-    let ch = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.name === name);
+    // Find by base name so channels made before emojis were added get renamed, not duplicated.
+    let ch = guild.channels.cache.find(c => c.type === ChannelType.GuildText && baseOf(c.name) === name);
+    if (ch && ch.name !== displayName(name)) await ch.setName(displayName(name), 'Add emoji to support queue channel').catch(e => console.error('Rename support channel error:', e));
     if (!ch) {
       const roles = await guild.roles.fetch();
       const viewer = leadersOnly ? [OWNER_ROLE_ID, CO_OWNER_ROLE_ID] : STAFF_ROLE_IDS;
@@ -94,11 +100,11 @@ module.exports = function setupSupportForms(d) {
       overwrites.push({ id: client.user.id, type: 1, allow: [...allow, PermissionsBitField.Flags.EmbedLinks, PermissionsBitField.Flags.ManageMessages] });
       const parent = findStaffCategory(guild);
       ch = await guild.channels.create({
-        name, type: ChannelType.GuildText, parent: parent?.id, permissionOverwrites: overwrites,
+        name: displayName(name), type: ChannelType.GuildText, parent: parent?.id, permissionOverwrites: overwrites,
         topic: leadersOnly ? 'Complaints about staff members. Owner/Co-Owner only.' : 'Support requests from the support panel.',
         reason: 'Support forms queue channel',
       });
-      console.log(`✅ Created support queue channel #${name}`);
+      console.log(`✅ Created support queue channel #${displayName(name)}`);
     }
     channelIds.set(name, ch.id);
     return ch;

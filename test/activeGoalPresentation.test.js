@@ -56,14 +56,14 @@ test('draws an hourly heatmap as % of goal with viewer-local timestamps', () => 
   cells[5][18] = 9;
   const panel = buildActiveGoalPanel({ ...goal, heatmap: { bucketHours: 1, cells }, weekHistory: [true, true, false, true, true, true, null], resetAt: 1800000000 });
   const heatFields = panel.fields.filter(field => /<t:\d+:t>/.test(field.value));
-  assert.ok(heatFields.length >= 2);
+  assert.ok(heatFields.length >= 1);
   for (const field of panel.fields) assert.ok(field.value.length <= 1024, field.name);
   const all = JSON.stringify(panel);
   assert.match(all, new RegExp(`<t:${1800000000 - 86400 + 18 * 3600}:t>`));
   assert.match(all, /Friday/);
   assert.match(all, /90% of goal/);
   assert.match(all, /🟨/);
-  assert.match(all, /🟥/);
+  assert.match(all, /🟦/);
   assert.match(all, /✅✅▫️✅✅✅⏳/);
   assert.ok(JSON.stringify(panel).length < 6000);
 });

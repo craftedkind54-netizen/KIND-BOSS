@@ -139,23 +139,31 @@ module.exports = function setupSupportForms(d) {
     }
     return modal;
   }
-  async function chooseStaffStep(i, type) {
-    const staff = (await d.refreshStaffCache(i.guild)).slice(0, 25);
-    const rows = [];
-    if (staff.length) {
-      rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
-        .setCustomId(`sf:pick:${type}`).setPlaceholder('👤 Request a specific staff member (optional)')
-        .addOptions(staff.map(m => ({ label: m.displayName.slice(0, 100), description: d.getStaffRoleName(m), value: m.id })))));
-    }
-    const buttons = [new ButtonBuilder().setCustomId(`sf:any:${type}`).setLabel('Any Staff Member').setEmoji('🛡️').setStyle(ButtonStyle.Success)];
+  // Step 1: buttons only. "Request Specific Staff" swaps in the staff list.
+  function chooseStaffStep(i, type) {
+    const buttons = [
+      new ButtonBuilder().setCustomId(`sf:choose:${type}`).setLabel('Request Specific Staff').setEmoji('👤').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`sf:any:${type}`).setLabel('Any Staff Member').setEmoji('🛡️').setStyle(ButtonStyle.Success),
+    ];
     if (type === 'complaint') buttons.push(new ButtonBuilder().setCustomId('sf:lead:complaint').setLabel('Complaint About a Staff Member').setEmoji('🔒').setStyle(ButtonStyle.Danger));
-    rows.push(new ActionRowBuilder().addComponents(...buttons));
     const extra = type === 'complaint'
       ? '\n\n🔒 If your complaint is **about a staff member**, press **Complaint About a Staff Member**. Only the Owner and Co-Owner will see it.'
       : type === 'report' ? `\n\n${EVIDENCE_TIP}` : '';
     return i.reply({
-      content: `${TYPES[type].emoji} **${TYPES[type].label}**\nWho should handle this? Pick a staff member, or press **Any Staff Member**.${extra}`,
-      components: rows, flags: MessageFlags.Ephemeral,
+      content: `${TYPES[type].emoji} **${TYPES[type].label}**\nWho should handle this? Press **Request Specific Staff** to pick someone, or **Any Staff Member**.${extra}`,
+      components: [new ActionRowBuilder().addComponents(...buttons)], flags: MessageFlags.Ephemeral,
+    });
+  }
+  async function staffListStep(i, type) {
+    const staff = (await d.refreshStaffCache(i.guild)).slice(0, 25);
+    if (!staff.length) return i.update({ content: '❌ No staff members could be found. Press **Any Staff Member** instead.', components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`sf:any:${type}`).setLabel('Any Staff Member').setEmoji('🛡️').setStyle(ButtonStyle.Success))] });
+    return i.update({
+      content: `${TYPES[type].emoji} **${TYPES[type].label}**\n👤 Choose the staff member you want:`,
+      components: [
+        new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`sf:pick:${type}`).setPlaceholder('Choose a staff member')
+          .addOptions(staff.map(m => ({ label: m.displayName.slice(0, 100), description: d.getStaffRoleName(m), value: m.id })))),
+        new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`sf:any:${type}`).setLabel('Any Staff Member Instead').setEmoji('🛡️').setStyle(ButtonStyle.Secondary)),
+      ],
     });
   }
   function submissionEmbed(type, user, target, values) {
@@ -193,6 +201,7 @@ module.exports = function setupSupportForms(d) {
   async function handle(i) {
     const id = i.customId;
     if (id.startsWith('sf:new:')) { const type = id.split(':')[2]; if (!TYPES[type]) return; if (type === 'poll') return i.showModal(modalFor('poll', 'any')); return chooseStaffStep(i, type); }
+    if (id.startsWith('sf:choose:')) { const type = id.split(':')[2]; if (!TYPES[type]) return; return staffListStep(i, type); }
     if (id.startsWith('sf:pick:') && i.isStringSelectMenu()) return i.showModal(modalFor(id.split(':')[2], i.values[0]));
     if (id.startsWith('sf:any:')) return i.showModal(modalFor(id.split(':')[2], 'any'));
     if (id === 'sf:lead:complaint') return i.showModal(modalFor('complaint', 'lead'));

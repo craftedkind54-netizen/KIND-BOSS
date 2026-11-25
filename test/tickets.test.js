@@ -6,7 +6,7 @@ const path = require('node:path');
 const discord = require('discord.js');
 function fixture(options = {}) {
   const bot = { user: { id: '111111111111111111' }, on() {}, once() {} };
-  const context = { require, console: { log() {}, error() {} }, Buffer, setTimeout,
+  const context = { require: id => id === './supportForms' ? require('../src/supportForms') : require(id), console: { log() {}, error() {} }, Buffer, setTimeout,
     global: { __KIND_BOSS_CLIENT: bot }, process: { env: { DISCORD_TOKEN: 'test' }, on() {} } };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/tickets.js'), 'utf8') + '\nthis.api = {createTicket, ticketCreationErrorMessage};', context);

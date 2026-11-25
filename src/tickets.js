@@ -59,6 +59,19 @@ const STAFF_ROLE_IDS = [
 // =====================================================
 
 const client = global.__KIND_BOSS_CLIENT;
+// Set up after the helpers below exist (function declarations are hoisted).
+const supportForms = require('./supportForms')({
+  client,
+  GUILD_ID,
+  OWNER_ROLE_ID,
+  CO_OWNER_ROLE_ID,
+  STAFF_ROLE_IDS,
+  CLOSED_TICKET_LOG_CHANNEL_ID,
+  createTicket: (...args) => createTicket(...args),
+  isStaff: (...args) => isStaff(...args),
+  refreshStaffCache: (...args) => refreshStaffCache(...args),
+  getStaffRoleName: (...args) => getStaffRoleName(...args),
+});
 
 // =====================================================
 // TICKET CREATION LOCKS
@@ -341,14 +354,14 @@ async function createSupportPanel(
           )
       );
 
+  // The four-option support forms panel replaces the old Specific/All Staff buttons
+  // (those handlers stay so buttons on any old panel message keep working).
+  void embed; void buttons;
   await channel.send({
     embeds: [
-      embed,
+      supportForms.panelEmbed(),
     ],
-
-    components: [
-      buttons,
-    ],
+    components: supportForms.panelRows(),
   });
 
   console.log(
@@ -529,7 +542,9 @@ async function createTicket({
     // ticket type and selected-role settings.
     const permittedRoles = new Set([
       ...allowedRoles.map(id => id.trim()),
-      ...(type === 'specific_staff' ? [] : [KIND_SMP_GENERAL_STAFF_ROLE_ID]),
+      // Only "All Staff" tickets open to General Staff; specific-staff and
+      // support-form tickets stay private to the staff who were chosen/added.
+      ...(type === 'all_staff' ? [KIND_SMP_GENERAL_STAFF_ROLE_ID] : []),
     ]);
     if (type === 'all_staff' && !staffRoles.some(id => permittedRoles.has(id))) {
       return { success: false, message: '❌ No valid support staff roles are configured. Please contact an owner.' };
@@ -593,6 +608,10 @@ async function createTicket({
 
     let privacyText =
       'This is a private support ticket.';
+    if (String(type).startsWith('form_')) {
+      privacyText =
+        'Only you and the staff member handling your request can see this ticket. They can add more staff if needed. Server administrators can also access it.';
+    }
 
     if (
       type ===

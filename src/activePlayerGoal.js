@@ -5,7 +5,7 @@ const MAX_SAMPLE_GAP_SECONDS = 90;
 const AVERAGE_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 // Samples are kept long enough to draw a 28-day "when players are online" heatmap.
 const HEATMAP_WINDOW_SECONDS = 28 * 24 * 60 * 60;
-const HEATMAP_BUCKET_HOURS = 3;
+const HEATMAP_BUCKET_HOURS = 1;
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function createActivePlayerGoal(db, { timezone = DEFAULTS.timezone, now = () => Date.now() } = {}) {
